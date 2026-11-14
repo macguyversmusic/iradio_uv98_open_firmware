@@ -757,7 +757,8 @@ static int bl_idx = 4;
 /* Backlight timeout (menu "Light off"); the keypad light (PA9) follows the backlight. */
 static const uint8_t light_list[] = { 0, 10, 20, 30, 60 };          /* seconds, 0 = always on */
 static const char *const light_name[] = { "ALWAYS", "10 s", "20 s", "30 s", "60 s" };
-static int light_idx = 0, lit = 1, locked, scanning, spectrum_on, fdet_on;
+static int light_idx = 0, lit = 1, locked, scanning, spectrum_on, fdet_on, dw_on, dw_hop, dw_home;
+static uint32_t dw_next, dw_quiet_since, dw_freq;
 static uint32_t fdet_next, fdet_until;
 static uint32_t last_activity, scan_next, scan_hold_until;
 
@@ -1725,6 +1726,82 @@ static void fdet_poll(void)
     }
 }
 
+/* ---------------- dual watch (radio chip 2) ---------------- */
+/* Chip 2 listens on the other VFO (init as stock 0x8003D34, tuning as 0x8003CCC, receive filter 0x33 bit 4 as
+ * 0x8003F30). When it hears a signal while chip 1 is quiet, chip 1 switches to that VFO so the signal is
+ * heard, and switches back 2 s after it ends. */
+static void dw_tune(uint32_t f)
+{
+    const band_t *b = band_of(f);
+    if (!b) return;
+    uint32_t v = f + cal_word(f, b->cal) - 0x8000u;
+    bk_write(1, 0x38, (uint16_t)(v & 0xFFFF));
+    bk_write(1, 0x39, (uint16_t)(v >> 16));
+    bk_write(1, 0x37, 0x1F0F);
+    delay_ms(10);
+    bk_write(1, 0x30, 0x0200);
+    bk_write(1, 0x30, 0xBFF1);
+    dw_freq = f;
+}
+
+static void dw_start(void)
+{
+    static const uint8_t r[] = { 0x13, 0x12, 0x11, 0x10, 0x14, 0x49, 0x7B, 0x33, 0x34, 0x35, 0x1E, 0x1F, 0x3E, 0x7D, 0x26 };
+    static const uint16_t v[] = { 0x03BE, 0x037B, 0x027B, 0x007A, 0x0019, 0x2A38, 0x8420, 0, 0, 0, 0x4C58, 0xA656, 0xA037, 0xE950, 0x13A0 };
+    bk_write(1, 0x00, 0x8000);
+    delay_ms(10);
+    bk_write(1, 0x00, 0x0000);
+    bk_write(1, 0x37, 0x1D0F);
+    for (unsigned i = 0; i < sizeof r; i++) bk_write(1, r[i], v[i]);
+    if (cal_ok) {
+        bk_write(1, 0x54, af300[cal_hdr[10]][0]); bk_write(1, 0x55, af300[cal_hdr[10]][1]);
+        bk_write(1, 0x75, af3k[cal_hdr[11]]);
+    }
+    bk_write(1, 0x43, 0x4048);
+    bk_write(1, 0x47, 0x6040);
+    bk_write(1, 0x33, 0x0010);
+    dw_home = vfo_cur;
+    dw_hop = 0;
+    dw_on = 1;
+    dw_tune(vfos[vfo_cur ^ 1].freq);
+    dw_next = ticks + 200;
+}
+
+static void dw_stop(void)
+{
+    if (dw_hop) { vfo_select(dw_home); dw_hop = 0; show_freq(); }
+    bk_write(1, 0x30, 0x0000);
+    bk_write(1, 0x37, 0x1D00);
+    dw_on = 0;
+}
+
+static void dw_poll(void)
+{
+    if ((int32_t)(ticks - dw_next) < 0) return;
+    dw_next = ticks + 100;
+    if (!dw_hop) {
+        uint32_t other = vfos[vfo_cur ^ 1].freq;
+        if (other != dw_freq) dw_tune(other);
+        int n2 = bk_read(1, 0x65) & 0x7F;
+        if (n2 <= 70 - 5 * sq_level && !audio_on) {
+            dw_home = vfo_cur;
+            vfo_select(vfo_cur ^ 1);
+            dw_hop = 1;
+            dw_quiet_since = ticks;
+            show_freq();
+            show_status(vfo_cur ? "DUAL WATCH: B" : "DUAL WATCH: A", C_GREEN);
+        }
+    } else {
+        if (audio_on) dw_quiet_since = ticks;
+        else if ((int32_t)(ticks - dw_quiet_since) >= 2000) {
+            vfo_select(dw_home);
+            dw_hop = 0;
+            show_freq();
+            show_status("RX", C_GREEN);
+        }
+    }
+}
+
 /* ---------------- menu ---------------- */
 /* Green bar opens it; up/down picks an item; green edits; up/down changes the value (applied at once,
  * up/down repeat when held); # jumps to the next tone type; green keeps the value, red bar restores
@@ -1764,11 +1841,11 @@ static void tone_from_index(int i, int *type, uint16_t *val)
 }
 
 enum { MI_BAND, MI_POWER, MI_TXTONE, MI_RXTONE, MI_SHIFT, MI_OFFSET, MI_SQ, MI_STEP, MI_MODE, MI_MIC, MI_TOT, MI_BL,
-       MI_LIGHT, MI_SCAN, MI_SPECTRUM, MI_FDET, MI_COUNT };
+       MI_LIGHT, MI_DW, MI_SCAN, MI_SPECTRUM, MI_FDET, MI_COUNT };
 static const char *const menu_name[MI_COUNT] = {
     "Band", "Power", "TX tone", "RX tone", "Shift", "Offset", "Squelch", "Step", "Mode", "Mic gain", "Time-out", "Backlight",
-    "Light off", "Scan", "Spectrum", "Freq detect" };
-static const char menu_key_of[MI_COUNT] = { '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '*', '#', ' ', ' ', ' ', ' ' };
+    "Light off", "Dual watch", "Scan", "Spectrum", "Freq detect" };
+static const char menu_key_of[MI_COUNT] = { '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '*', '#', ' ', ' ', ' ', ' ', ' ' };
 static int menu_sel, menu_edit;
 
 static void put2(char *s, int v) { if (v >= 10) *s++ = (char)('0' + v / 10); *s++ = (char)('0' + v % 10); *s = 0; }
@@ -1798,6 +1875,7 @@ static void menu_value(int item, char *s)
                    s[p++] = ' '; s[p++] = 's'; s[p] = 0; return; }
     case MI_BL: put2(s, bl_idx + 1); return;
     case MI_LIGHT: src = light_name[light_idx]; break;
+    case MI_DW: src = dw_on ? "ON" : "OFF"; break;
     case MI_SCAN: case MI_SPECTRUM: case MI_FDET: src = "Start"; break;
     }
     while ((*s++ = *src++)) { }
@@ -1837,6 +1915,7 @@ static void menu_change(int item, int dir)
     case MI_TOT: tot_idx = clampi(tot_idx + dir, 0, (int)(sizeof tot_list / sizeof tot_list[0]) - 1); break;
     case MI_BL: bl_idx = clampi(bl_idx + dir, 0, 4); backlight(bl_list[bl_idx]); break;
     case MI_LIGHT: light_idx = clampi(light_idx + dir, 0, (int)sizeof light_list - 1); break;
+    case MI_DW: if (dw_on) dw_stop(); else dw_start(); break;
     case MI_SCAN: case MI_SPECTRUM: case MI_FDET: break;
     }
 }
@@ -2429,6 +2508,7 @@ int main(void)
                     changed = radio_tune(khz * 100);
                     if (!changed) show_status("BAD FREQUENCY", C_YELLOW);
                 } else if (k == '*') {
+                    dw_hop = 0;
                     vfo_select(vfo_cur ^ 1);
                     show_info();
                     changed = 1;
@@ -2506,6 +2586,7 @@ int main(void)
         if (scanning && !tx_on && !menu_open) scan_step();
         if (spectrum_on && !tx_on) spectrum_sweep();
         if (fdet_on && !tx_on) fdet_poll();
+        if (dw_on && !tx_on && !menu_open && !scanning && !spectrum_on && !fdet_on) dw_poll();
 
         if (lit && light_list[light_idx] && !tx_on && !audio_on && !menu_open &&
             (int32_t)(ticks - last_activity) >= (int32_t)light_list[light_idx] * 1000) {
