@@ -213,8 +213,9 @@ void BusFault_Handler(void)   { fault_blink(); }
 void UsageFault_Handler(void) { fault_blink(); }
 
 /* ---------------- serial: USART6, PA11 TX / PA12 RX ---------------- */
-static volatile uint8_t rx_buf[128];
-static volatile uint8_t rx_head, rx_tail;
+#define RX_SIZE 2048u               /* holds a whole 1 KB programming packet with room to spare */
+static volatile uint8_t rx_buf[RX_SIZE];
+static volatile uint16_t rx_head, rx_tail;
 
 static void uart_init(void)
 {
@@ -236,7 +237,7 @@ void USART6_IRQHandler(void)
     /* Reading the data register clears both the data-ready and the overrun flags. */
     while (usart_flag_get(USART6, USART_RDBF_FLAG) == SET || usart_flag_get(USART6, USART_ROERR_FLAG) == SET) {
         uint8_t b = (uint8_t)usart_data_receive(USART6);
-        uint8_t next = (uint8_t)((rx_head + 1) & 127);
+        uint16_t next = (uint16_t)((rx_head + 1) & (RX_SIZE - 1));
         if (next != rx_tail) {
             rx_buf[rx_head] = b;
             rx_head = next;
@@ -259,7 +260,7 @@ static int uart_getc(void)
 {
     if (rx_tail == rx_head) return -1;
     uint8_t b = rx_buf[rx_tail];
-    rx_tail = (uint8_t)((rx_tail + 1) & 127);
+    rx_tail = (uint16_t)((rx_tail + 1) & (RX_SIZE - 1));
     return b;
 }
 
@@ -2033,6 +2034,110 @@ static void set_autosave(void)
     if (s.sum != set_saved_sum && !tx_on && (int32_t)(ticks - set_change_at) >= 3000) set_save();
 }
 
+/* ---------------- stock programming protocol (CPS, CHIRP) ---------------- */
+/* As the stock firmware (handler 0x8024624, block handler 0x801BDC8), so CPS and CHIRP keep working:
+ *   34 52 05 10 9B     enter (reply 06)          34 52 05 EE 79   exit (restart if anything was written)
+ *   52 hi lo sum       read 1 KB block hi:lo of the SPI flash: reply 52 hi lo + 1024 bytes + sum
+ *   cc hi lo + 1024 + sum  (cc = 0x90-0xA3 or 0x40) write a 1 KB block of region cc; block 0 erases the
+ *                      whole region first; reply 06
+ *   *YYMMDDhhmmss#     clock (accepted, reply 06)
+ * Anything else: FF. While programming nothing else runs; 10 s of silence leaves. */
+static const struct { uint8_t code; uint16_t sector, count; } prog_regions[] = {
+    { 0x40, 0x000, 1 }, { 0x90, 0x002, 1 }, { 0x91, 0x004, 0x0C }, { 0x92, 0x01C, 0x20 }, { 0x93, 0x05C, 0x10 },
+    { 0x94, 0x07C, 3 }, { 0x95, 0x082, 3 }, { 0x96, 0x088, 0x0C }, { 0x97, 0x094, 1 }, { 0x98, 0x0C6, 8 },
+    { 0x99, 0x0D6, 1 }, { 0x9A, 0x100, 0x26 }, { 0x9B, 0x126, 4 }, { 0x9C, 0x14C, 0x18 }, { 0x9D, 0x164, 0x24 },
+    { 0x9E, 0x188, 0x10 }, { 0x9F, 0x198, 4 }, { 0xA0, 0x19C, 2 }, { 0xA1, 0x19E, 0x1A5 }, { 0xA2, 0x343, 0x0F },
+    { 0xA3, 0x352, 0xAE },
+};
+
+static int uart_getc_wait(uint32_t ms)
+{
+    uint32_t t0 = ticks;
+    for (;;) {
+        int c = uart_getc();
+        if (c >= 0) return c;
+        if ((int32_t)(ticks - t0) >= (int32_t)ms) return -1;
+        wdt_counter_reload();
+    }
+}
+
+static int uart_read_n(uint8_t *b, int n, uint32_t ms)
+{
+    for (int i = 0; i < n; i++) {
+        int c = uart_getc_wait(ms);
+        if (c < 0) return 0;
+        b[i] = (uint8_t)c;
+    }
+    return 1;
+}
+
+static void flash_write_1k(uint32_t addr, const uint8_t *data)
+{
+    for (int pg = 0; pg < 4; pg++) {
+        flash_cmd_addr(0x02, addr + (uint32_t)pg * 256u);
+        for (int i = 0; i < 256; i++) flash_xfer(data[pg * 256 + i]);
+        gpio_bits_set(GPIOB, GPIO_PINS_12);
+        flash_wait();
+    }
+}
+
+static void prog_mode(void)
+{
+    static uint8_t pkt[1028];
+    int wrote = 0;
+    scan_stop();
+    audio_close();
+    uart_putc(0x06);
+    show_status("PROGRAMMING", C_YELLOW);
+    for (;;) {
+        int c = uart_getc_wait(10000);
+        if (c < 0) break;
+        if (c == 0x34) {
+            uint8_t s[4];
+            if (!uart_read_n(s, 4, 500)) continue;
+            if (s[0] == 0x52 && s[1] == 0x05 && s[2] == 0xEE && s[3] == 0x79) break;
+            uart_putc(s[0] == 0x52 && s[1] == 0x05 && s[2] == 0x10 && s[3] == 0x9B ? 0x06 : 0xFF);
+        } else if (c == 0x52) {
+            uint8_t s[3];
+            if (!uart_read_n(s, 3, 500)) continue;
+            if (((0x52 + s[0] + s[1]) & 0xFF) != s[2]) { uart_putc((char)0xFF); continue; }
+            uint32_t block = (uint32_t)s[0] << 8 | s[1];
+            pkt[0] = 0x52; pkt[1] = s[0]; pkt[2] = s[1];
+            flash_read(block * 0x400u, pkt + 3, 0x400);
+            uint8_t sum = 0;
+            for (int i = 0; i < 0x403; i++) sum = (uint8_t)(sum + pkt[i]);
+            pkt[0x403] = sum;
+            for (int i = 0; i < 0x404; i++) uart_putc((char)pkt[i]);
+        } else if ((c >= 0x90 && c <= 0xA3) || c == 0x40) {
+            pkt[0] = (uint8_t)c;
+            if (!uart_read_n(pkt + 1, 1027, 1000)) continue;
+            uint8_t sum = 0;
+            for (int i = 0; i < 1027; i++) sum = (uint8_t)(sum + pkt[i]);
+            int r = -1;
+            for (unsigned i = 0; i < sizeof prog_regions / sizeof prog_regions[0]; i++) if (prog_regions[i].code == c) r = (int)i;
+            uint32_t block = (uint32_t)pkt[1] << 8 | pkt[2];
+            if (sum != pkt[1027] || r < 0 || block * 0x400u >= prog_regions[r].count * 0x1000u) { uart_putc((char)0xFF); continue; }
+            if (block == 0)
+                for (uint16_t s = 0; s < prog_regions[r].count; s++) {
+                    flash_cmd_addr(0x20, (uint32_t)(prog_regions[r].sector + s) * 0x1000u);
+                    gpio_bits_set(GPIOB, GPIO_PINS_12);
+                    flash_wait();
+                }
+            flash_write_1k((uint32_t)prog_regions[r].sector * 0x1000u + block * 0x400u, pkt + 3);
+            wrote = 1;
+            uart_putc(0x06);
+        } else if (c == '*') {
+            uint8_t s[13];
+            uart_read_n(s, 13, 500);
+            uart_putc(0x06);
+        } else {
+            uart_putc((char)0xFF);
+        }
+    }
+    if (wrote) NVIC_SystemReset();     /* reload calibration, channels and settings, as stock restarts */
+    show_status("RX", C_GREEN);
+}
+
 /* ---------------- menu ---------------- */
 /* Green bar opens it; up/down picks an item; green edits; up/down changes the value (applied at once,
  * up/down repeat when held); # jumps to the next tone type; green keeps the value, red bar restores
@@ -2692,6 +2797,7 @@ int main(void)
     uint16_t last_m = 0;
     int last_key = 0, tx_lockout = 0, alarm_count = 0;
     uint32_t rep_at = 0, green_since = 0;
+    uint64_t prog_hist = 0;
     int green_used = 1;
     uint32_t tx_until = 0;
     uint32_t next_scan = 0, next_rssi = 0, next_sq = 0, next_batt = 10000, next_save = 5000;
@@ -2701,6 +2807,10 @@ int main(void)
         wdt_counter_reload();
 
         int c = uart_getc();
+        if (c >= 0) {
+            prog_hist = (prog_hist << 8 | (uint8_t)c) & 0xFFFFFFFFFFull;
+            if (prog_hist == 0x345205109Bull && !tx_on) { prog_mode(); len = 0; prog_hist = 0; continue; }
+        }
         if (c >= 0) {
             if (c == '\r' || c == '\n') {
                 buf[len] = 0;
