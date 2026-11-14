@@ -6,10 +6,13 @@
 #include <stddef.h>
 #include "fonts_aa.h"
 
-#define FW_NAME  "UV98+ open test 17"
+#define FW_NAME  "UV98+ open test 18"
 #define APP_BASE 0x08002800u
 
 static void report_freq(void);
+static void show_vfo2(void);
+static void chan_leave(void);
+static int chan_apply(int n);
 
 /* ---------------- timing ---------------- */
 static volatile uint32_t ticks;
@@ -761,7 +764,7 @@ static int bl_idx = 4;
 /* Backlight timeout (menu "Light off"); the keypad light (PA9) follows the backlight. */
 static const uint8_t light_list[] = { 0, 10, 20, 30, 60 };          /* seconds, 0 = always on */
 static const char *const light_name[] = { "ALWAYS", "10 s", "20 s", "30 s", "60 s" };
-static int light_idx = 0, lit = 1, locked, scanning, spectrum_on, fdet_on, dw_on, dw_hop, dw_home;
+static int light_idx = 0, lit = 1, locked, scanning, spectrum_on, fdet_on, dw_on, dw_hop, dw_wait_clear, dw_saved_power;
 static uint32_t dw_next, dw_quiet_since, dw_freq;
 static uint32_t fdet_next, fdet_until;
 static uint32_t last_activity, scan_next, scan_hold_until;
@@ -996,6 +999,7 @@ static uint32_t serial_ptt_until;
 /* Channel mode (the stock channels in SPI flash, read only): the channel's own TX frequency. */
 static int chan_mode, chan_num;        /* chan_num 0-1023 */
 static uint32_t chan_txf;
+static int vfo_power;                  /* menu power in VFO mode, kept while a channel uses its own */
 static char chan_name[17];
 
 static uint32_t tx_freq(void)
@@ -1366,19 +1370,6 @@ static void show_chips(void)
     chip_row(Y_CHIPS2, r2, c2, n);
 }
 
-static void show_info(void)
-{
-    if (menu_open) return;
-    char s[24] = "SQ ";
-    int p = 3;
-    s[p++] = (char)('0' + sq_level);
-    for (const char *q = "    STEP "; *q; q++) s[p++] = *q;
-    for (const char *q = step_name[step_idx]; *q; q++) s[p++] = *q;
-    s[p] = 0;
-    lcd_fill(0, Y_INFO, LCD_W, F_SMALL->height, C_BLACK);
-    aa_text_c(Y_INFO, F_SMALL, s, P->dim, C_BLACK);
-}
-
 /* "446.006" large, "25" smaller on the same baseline, centred. */
 static void show_freq(void)
 {
@@ -1411,6 +1402,7 @@ static void show_freq(void)
     }
     if (x < LCD_W) lcd_fill(x, Y_FREQ, LCD_W - x, font_big.height, C_BLACK);
     show_chips();
+    show_vfo2();
 }
 
 /* Signal meter at the bottom: 20 segments, 12 up to S9 (4.5 dB each), 8 above S9 (5 dB each, to
@@ -1574,7 +1566,7 @@ static void draw_home(void)
     top_bar();
     show_freq();
     show_status(status_text, status_fg);
-    show_info();
+    show_vfo2();
     show_batt();
     meter_scale();
     meter_bars = -1;
@@ -1649,7 +1641,7 @@ static void wake(void)
 /* Scan the current receive band by the menu step; stop on a signal, carry on 3 s after it goes. */
 static void scan_start(void)
 {
-    if (chan_mode) { chan_mode = 0; chan_txf = 0; vfo_load(vfo_cur); show_freq(); }
+    if (chan_mode) { chan_leave(); show_freq(); }
     if (rxband_of(freq10) < 0) { show_status("SCAN: NOT IN A BAND", C_YELLOW); return; }
     scanning = 1;
     scan_next = ticks;
@@ -1700,24 +1692,51 @@ static void spectrum_start(void)
     aa_text_c(SPEC_TOP + SPEC_H + 8, F_SMALL, s, P->dim, C_BLACK);
 }
 
+/* Signal strength at f in dBm, or SPEC_NONE if f cannot be tuned. After tuning, 0x67 reads about
+ * -145 dBm for a few ms (measured over USB: -145 at 2 ms, steady by 16 ms), so wait until the reading
+ * is up and has stopped rising, at most 30 ms. spec_settle adds up the waits. */
+#define SPEC_NONE 1000
+static uint32_t spec_settle;
+static int spec_point(uint32_t f)
+{
+    if (!radio_tune(f)) return SPEC_NONE;
+    int ms = 0, last = -100;
+    for (;;) {
+        int r = bk_read(0, 0x67) & 0x1FF;
+        if ((r >= 60 && r <= last + 4) || ms >= 30) break;      /* above -130 dBm and up by 2 dB or less */
+        last = r;
+        delay_ms(1);
+        ms++;
+    }
+    spec_settle += (uint32_t)ms;
+    return rssi_dbm();
+}
+
+/* One sweep, then the bars: height is dB above the sweep's median (the noise floor), 3 px per dB,
+ * so an empty band is a low row and signals stand up from it. */
 static void spectrum_sweep(void)
 {
     uint32_t center = freq10, st = step_list[step_idx];
+    int v[SPEC_N], sorted[SPEC_N], n = 0;
     for (int i = 0; i < SPEC_N; i++) {
         wdt_counter_reload();
-        uint32_t f = center + (uint32_t)(i - SPEC_N / 2) * st;
-        int h = 0;
-        if (radio_tune(f)) {
-            delay_ms(2);
-            h = (rssi_dbm() + 125) * SPEC_H / 100;
-            if (h < 1) h = 1;
-            if (h > SPEC_H) h = SPEC_H;
+        v[i] = spec_point(center + (uint32_t)(i - SPEC_N / 2) * st);
+        if (v[i] != SPEC_NONE) {                               /* insertion sort for the median */
+            int k = n++;
+            while (k > 0 && sorted[k - 1] > v[i]) { sorted[k] = sorted[k - 1]; k--; }
+            sorted[k] = v[i];
         }
-        int x = 10 + i * 5;
-        lcd_fill(x, SPEC_TOP, 4, SPEC_H - h, C_BLACK);
-        lcd_fill(x, SPEC_TOP + SPEC_H - h, 4, h, i == SPEC_N / 2 ? C_YELLOW : C_WHITE);
     }
     radio_tune(center);
+    int floor = n ? sorted[n / 2] : 0;
+    for (int i = 0; i < SPEC_N; i++) {
+        int h = v[i] == SPEC_NONE ? 0 : (v[i] - floor + 3) * 3;
+        if (v[i] != SPEC_NONE && h < 1) h = 1;
+        if (h > SPEC_H) h = SPEC_H;
+        int x = 10 + i * 5;
+        lcd_fill(x, SPEC_TOP, 4, SPEC_H - h, C_BLACK);
+        if (h) lcd_fill(x, SPEC_TOP + SPEC_H - h, 4, h, i == SPEC_N / 2 ? C_YELLOW : C_WHITE);
+    }
 }
 
 static void spectrum_stop(void)
@@ -1731,7 +1750,7 @@ static void spectrum_stop(void)
  * bit 15 is clear, (0x0D & 0x7FF) << 16 | 0x0E + 0x8028 - calibration word is the frequency found. */
 static void fdet_start(void)
 {
-    if (chan_mode) { chan_mode = 0; chan_txf = 0; vfo_load(vfo_cur); show_freq(); }
+    if (chan_mode) { chan_leave(); show_freq(); }
     audio_close();
     bk1_write(0x32, 0x0B01);
     fdet_on = 1;
@@ -1769,9 +1788,11 @@ static void fdet_poll(void)
 }
 
 /* ---------------- dual watch (radio chip 2) ---------------- */
-/* Chip 2 listens on the other VFO (init as stock 0x8003D34, tuning as 0x8003CCC, receive filter 0x33 bit 4 as
- * 0x8003F30). When it hears a signal while chip 1 is quiet, chip 1 switches to that VFO so the signal is
- * heard, and switches back 2 s after it ends. */
+/* Chip 2 listens on the other VFO, shown on the line above the meter (init as stock 0x8003D34, tuning as
+ * 0x8003CCC, receive filter 0x33 bit 4 as 0x8003F30). When it hears a signal while chip 1 is quiet, chip 1
+ * listens there too so the signal is heard; the top of the screen and transmit stay on the main VFO or
+ * channel. Chip 1 comes back 2 s after the signal ends, or at once on a key, PTT or a serial command that
+ * changes something. It does not switch again until that signal has gone. */
 static void dw_tune(uint32_t f)
 {
     const band_t *b = band_of(f);
@@ -1802,19 +1823,66 @@ static void dw_start(void)
     bk_write(1, 0x43, 0x4048);
     bk_write(1, 0x47, 0x6040);
     bk_write(1, 0x33, 0x0010);
-    dw_home = vfo_cur;
     dw_hop = 0;
+    dw_wait_clear = 0;
     dw_on = 1;
     dw_tune(vfos[vfo_cur ^ 1].freq);
     dw_next = ticks + 200;
+    show_vfo2();
+}
+
+/* The other VFO on the line above the meter, small, receive only: green while chip 1 is listening to
+ * it, dim with dual watch off. */
+static void show_vfo2(void)
+{
+    if (menu_open || spectrum_on) return;
+    const vfo_t *v = &vfos[vfo_cur ^ 1];
+    char s[28], f[16];
+    int p = 0;
+    s[p++] = vfo_cur ? 'A' : 'B'; s[p++] = ' '; s[p++] = ' ';
+    fmt_freq(f, v->freq);
+    for (const char *q = f; *q; q++) s[p++] = *q;
+    s[p++] = ' '; s[p++] = ' ';
+    for (const char *q = mode_name[v->mode % NMODES]; *q; q++) s[p++] = *q;
+    s[p] = 0;
+    lcd_fill(0, Y_INFO, LCD_W, F_SMALL->height, C_BLACK);
+    aa_text_c(Y_INFO, F_SMALL, s, !dw_on ? P->dim : dw_hop ? C_GREEN : P->light, C_BLACK);
+}
+
+/* Chip 1 to the other VFO's frequency, mode and receive tone, without changing the main VFO. */
+static void dw_hop_start(void)
+{
+    if (!chan_mode) vfo_store();
+    dw_saved_power = power;
+    const vfo_t *v = &vfos[vfo_cur ^ 1];
+    mode = v->mode % NMODES; rx_tone_type = v->rt; rx_tone_val = v->rv;
+    audio_close();
+    radio_tune(v->freq);
+    radio_mode();
+    dw_hop = 1;
+    dw_quiet_since = ticks;
+    show_vfo2();
+    uart_puts("DW SWITCHED\r\n");
+}
+
+static void dw_hop_end(void)
+{
+    if (!dw_hop) return;
+    dw_hop = 0;
+    dw_wait_clear = 1;
+    if (chan_mode) { chan_apply(chan_num); power = dw_saved_power; }
+    else vfo_load(vfo_cur);
+    show_vfo2();
+    uart_puts("DW BACK\r\n");
 }
 
 static void dw_stop(void)
 {
-    if (dw_hop) { vfo_select(dw_home); dw_hop = 0; show_freq(); }
+    dw_hop_end();
     bk_write(1, 0x30, 0x0000);
     bk_write(1, 0x37, 0x1D00);
     dw_on = 0;
+    show_vfo2();
 }
 
 static void dw_poll(void)
@@ -1823,26 +1891,13 @@ static void dw_poll(void)
     dw_next = ticks + 100;
     if (!dw_hop) {
         uint32_t other = vfos[vfo_cur ^ 1].freq;
-        if (other != dw_freq) dw_tune(other);
-        int n2 = bk_read(1, 0x65) & 0x7F;
-        if (n2 <= 70 - 5 * sq_level && !audio_on) {
-            dw_home = vfo_cur;
-            vfo_select(vfo_cur ^ 1);
-            dw_hop = 1;
-            dw_quiet_since = ticks;
-            show_freq();
-            show_status(vfo_cur ? "DUAL WATCH: B" : "DUAL WATCH: A", C_GREEN);
-            uart_puts("DW SWITCHED\r\n");
-            report_freq();
-        }
+        if (other != dw_freq) { dw_tune(other); dw_wait_clear = 0; return; }
+        int heard = (bk_read(1, 0x65) & 0x7F) <= 70 - 5 * sq_level;
+        if (!heard) dw_wait_clear = 0;
+        else if (!dw_wait_clear && !audio_on) dw_hop_start();
     } else {
         if (audio_on) dw_quiet_since = ticks;
-        else if ((int32_t)(ticks - dw_quiet_since) >= 2000) {
-            vfo_select(dw_home);
-            dw_hop = 0;
-            show_freq();
-            show_status("RX", C_GREEN);
-        }
+        else if ((int32_t)(ticks - dw_quiet_since) >= 2000) { dw_hop_end(); show_status("RX", C_GREEN); }
     }
 }
 
@@ -1881,6 +1936,7 @@ static int chan_apply(int n)
     mode = c[0] == 1 ? MODE_AM : c[0] >= 2 ? MODE_USB : c[3] ? MODE_NFM : MODE_FM;
     tone_from_chan((uint16_t)(c[14] | c[15] << 8), &tone_type, &tone_val);
     tone_from_chan((uint16_t)(c[4] | c[5] << 8), &rx_tone_type, &rx_tone_val);
+    power = c[16] == 2 ? 3 : c[16] == 1 ? 2 : 1;   /* +16: 0 Low, 1 Medium, 2 High (CHIRP) */
     int k = 0;
     for (int i = 0; i < 16; i++) { uint8_t ch = c[32 + i]; if (ch >= 0x20 && ch < 0x7F) chan_name[k++] = (char)ch; }
     while (k && chan_name[k - 1] == ' ') k--;
@@ -1902,20 +1958,36 @@ static int chan_next(int n, int dir)
     return -1;
 }
 
+/* Channels use their own power; the menu power of VFO mode is kept for coming back. */
+static void chan_on(void)
+{
+    if (chan_mode) return;
+    vfo_store();                       /* keep the VFO for coming back */
+    vfo_power = power;
+    chan_mode = 1;
+}
+
+static void chan_off(void)
+{
+    if (!chan_mode) return;
+    chan_mode = 0;
+    chan_txf = 0;
+    power = vfo_power;
+}
+
 static int chan_enter(void)
 {
-    int n = chan_apply(chan_num) ? chan_num : chan_next(chan_num, 1);
+    uint8_t c[CH_SIZE];
+    int n = chan_read(chan_num, c) ? chan_num : chan_next(chan_num, 1);
     if (n < 0) { show_status("NO CHANNELS", C_YELLOW); return 0; }
-    vfo_store();                       /* keep the VFO for coming back */
-    chan_mode = 1;
-    chan_apply(n);
+    chan_on();
+    if (!chan_apply(n)) { chan_leave(); show_status("EMPTY CHANNEL", C_YELLOW); return 0; }
     return 1;
 }
 
 static void chan_leave(void)
 {
-    chan_mode = 0;
-    chan_txf = 0;
+    chan_off();
     vfo_load(vfo_cur);                 /* the VFO's own frequency, mode and tones again */
 }
 
@@ -1956,7 +2028,7 @@ static void set_collect(settings_t *s)
         v->shift = (int8_t)shift; v->tt = (uint8_t)tone_type; v->tv = tone_val; v->rt = (uint8_t)rx_tone_type; v->rv = rx_tone_val;
     }
     s->vfo[0] = vfos[0]; s->vfo[1] = vfos[1];
-    s->vfo_cur = (uint8_t)vfo_cur; s->power = (uint8_t)power; s->mic = (uint8_t)mic_gain; s->sq = (uint8_t)sq_level;
+    s->vfo_cur = (uint8_t)vfo_cur; s->power = (uint8_t)(chan_mode ? vfo_power : power); s->mic = (uint8_t)mic_gain; s->sq = (uint8_t)sq_level;
     s->tot = (uint8_t)tot_idx; s->bl = (uint8_t)bl_idx; s->light = (uint8_t)light_idx; s->edge = (uint8_t)edge;
     s->pal = (uint8_t)(P - palettes); s->font = F_MED == &font_med ? 1 : 2;
     s->chan_mode = (uint8_t)chan_mode; s->chan_num = (uint16_t)chan_num;
@@ -2014,7 +2086,7 @@ static void set_load(void)
     const vfo_t *v = &vfos[vfo_cur];
     freq10 = v->freq; mode = v->mode % NMODES; step_idx = v->step; ofs_idx = v->ofs; shift = v->shift;
     tone_type = v->tt; tone_val = v->tv; rx_tone_type = v->rt; rx_tone_val = v->rv;
-    power = s.power & 3; mic_gain = s.mic & 31; sq_level = s.sq % 10; tot_idx = s.tot; bl_idx = s.bl % 5;
+    power = vfo_power = s.power & 3; mic_gain = s.mic & 31; sq_level = s.sq % 10; tot_idx = s.tot; bl_idx = s.bl % 5;
     light_idx = s.light; edge = s.edge & 3; P = &palettes[s.pal & 1];
     F_MED = s.font == 1 ? &font_med : &font_med2; F_SMALL = s.font == 1 ? &font_small : &font_small2;
     for (int i = 0; i < NRXBANDS; i++) band_freq[i] = s.band_freq[i];
@@ -2139,9 +2211,10 @@ static void prog_mode(void)
 }
 
 /* ---------------- menu ---------------- */
-/* Green bar opens it; up/down picks an item; green edits; up/down changes the value (applied at once,
- * up/down repeat when held); # jumps to the next tone type; green keeps the value, red bar restores
- * it; red bar leaves the menu. Keys 1-9, 0, * and # open items 1-12 for editing. PTT closes the menu. */
+/* Green bar opens it at the groups (RX/TX, Audio, Memory, Scan, Settings); up/down picks; green or the
+ * row's number opens a group, starts an action or edits a value; up/down changes the value (applied at
+ * once, repeat when held); # jumps to the next tone type; green keeps the value, red bar restores it;
+ * red bar goes back a level and leaves the menu from the top. PTT closes the menu. */
 static const uint16_t ctcss_list[50] = {
     670, 693, 719, 744, 770, 797, 825, 854, 885, 915, 948, 974, 1000, 1035, 1072, 1109, 1148,
     1188, 1230, 1273, 1318, 1365, 1413, 1462, 1514, 1567, 1598, 1622, 1655, 1679, 1713, 1738,
@@ -2177,12 +2250,23 @@ static void tone_from_index(int i, int *type, uint16_t *val)
 }
 
 enum { MI_BAND, MI_POWER, MI_TXTONE, MI_RXTONE, MI_SHIFT, MI_OFFSET, MI_SQ, MI_STEP, MI_MODE, MI_MIC, MI_TOT, MI_BL,
-       MI_LIGHT, MI_DW, MI_SCAN, MI_SPECTRUM, MI_FDET, MI_COUNT };
+       MI_LIGHT, MI_DW, MI_SCAN, MI_SPECTRUM, MI_FDET, MI_AGC, MI_CHMODE, MI_CHAN, MI_COUNT };
 static const char *const menu_name[MI_COUNT] = {
     "Band", "Power", "TX tone", "RX tone", "Shift", "Offset", "Squelch", "Step", "Mode", "Mic gain", "Time-out", "Backlight",
-    "Light off", "Dual watch", "Scan", "Spectrum", "Freq detect" };
-static const char menu_key_of[MI_COUNT] = { '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '*', '#', ' ', ' ', ' ', ' ', ' ' };
-static int menu_sel, menu_edit;
+    "Light off", "Dual watch", "Scan", "Spectrum", "Freq detect", "AGC", "VFO / CH", "Channel" };
+/* The top level lists the groups; each group opens its own list, numbered from 1 (0 for the tenth). */
+typedef struct { const char *name; uint8_t n; uint8_t item[10]; } menu_group_t;
+static const menu_group_t menu_groups[] = {
+    { "RX/TX",    10, { MI_BAND, MI_MODE, MI_POWER, MI_STEP, MI_SQ, MI_TXTONE, MI_RXTONE, MI_SHIFT, MI_OFFSET, MI_TOT } },
+    { "Audio",     2, { MI_MIC, MI_AGC } },
+    { "Memory",    2, { MI_CHMODE, MI_CHAN } },
+    { "Scan",      3, { MI_SCAN, MI_SPECTRUM, MI_FDET } },
+    { "Settings",  3, { MI_DW, MI_BL, MI_LIGHT } },
+};
+#define NGROUPS ((int)(sizeof menu_groups / sizeof menu_groups[0]))
+static int menu_group = -1, menu_last_group, menu_sel, menu_edit;   /* menu_group -1 = top level; menu_sel = row */
+static int menu_count(void) { return menu_group < 0 ? NGROUPS : menu_groups[menu_group].n; }
+static char menu_key_of(int row) { return row < 9 ? (char)('1' + row) : row == 9 ? '0' : ' '; }
 
 static void put2(char *s, int v) { if (v >= 10) *s++ = (char)('0' + v / 10); *s++ = (char)('0' + v % 10); *s = 0; }
 
@@ -2213,6 +2297,12 @@ static void menu_value(int item, char *s)
     case MI_LIGHT: src = light_name[light_idx]; break;
     case MI_DW: src = dw_on ? "ON" : "OFF"; break;
     case MI_SCAN: case MI_SPECTRUM: case MI_FDET: src = "Start"; break;
+    case MI_AGC: src = agc_on ? "ON" : "OFF"; break;
+    case MI_CHMODE: src = chan_mode ? "CHANNEL" : "VFO"; break;
+    case MI_CHAN: { int v = chan_num + 1, p = 0; char d[5]; int n = 0;
+                    do { d[n++] = (char)('0' + v % 10); v /= 10; } while (v);
+                    while (n) s[p++] = d[--n];
+                    s[p] = 0; return; }
     }
     while ((*s++ = *src++)) { }
 }
@@ -2224,7 +2314,7 @@ static void menu_change(int item, int dir)
     int i;
     switch (item) {
     case MI_BAND: {
-        if (chan_mode) { chan_mode = 0; chan_txf = 0; }
+        if (chan_mode) chan_leave();
         int b = rxband_of(freq10);
         if (b < 0) b = band_last;
         b = (b + dir + NRXBANDS) % NRXBANDS;
@@ -2254,6 +2344,12 @@ static void menu_change(int item, int dir)
     case MI_LIGHT: light_idx = clampi(light_idx + dir, 0, (int)sizeof light_list - 1); break;
     case MI_DW: if (dw_on) dw_stop(); else dw_start(); break;
     case MI_SCAN: case MI_SPECTRUM: case MI_FDET: break;
+    case MI_AGC: agc_on = !agc_on; break;
+    case MI_CHMODE: if (chan_mode) chan_leave(); else chan_enter(); break;
+    case MI_CHAN:
+        if (!chan_mode) chan_enter();
+        else { int n = chan_next(chan_num, dir); if (n >= 0) chan_apply(n); }
+        break;
     }
 }
 
@@ -2269,9 +2365,10 @@ static void menu_jump(int item)
 }
 
 /* Value before an edit, restored by the red bar. */
-static struct { int power, mic, tt, rt, sq, step, mode, tot, bl, shift, ofs, light; uint16_t tv, rv; uint32_t freq; } menu_old;
+static struct { int power, mic, tt, rt, sq, step, mode, tot, bl, shift, ofs, light, agc, dw, chm, chn; uint16_t tv, rv; uint32_t freq; } menu_old;
 static void menu_snapshot(void)
 {
+    menu_old.agc = agc_on; menu_old.dw = dw_on; menu_old.chm = chan_mode; menu_old.chn = chan_num;
     menu_old.freq = freq10;
     menu_old.shift = shift; menu_old.ofs = ofs_idx; menu_old.light = light_idx;
     menu_old.power = power; menu_old.mic = mic_gain; menu_old.tt = tone_type; menu_old.tv = tone_val;
@@ -2280,6 +2377,11 @@ static void menu_snapshot(void)
 }
 static void menu_restore(void)
 {
+    agc_on = menu_old.agc;
+    if (dw_on != menu_old.dw) { if (dw_on) dw_stop(); else dw_start(); }
+    if (chan_mode != menu_old.chm) {
+        if (chan_mode) chan_leave(); else { chan_num = menu_old.chn; chan_enter(); }
+    } else if (chan_mode && chan_num != menu_old.chn) chan_apply(menu_old.chn);
     if (freq10 != menu_old.freq) radio_tune(menu_old.freq);
     shift = menu_old.shift; ofs_idx = menu_old.ofs; light_idx = menu_old.light;
     power = menu_old.power; mic_gain = menu_old.mic; tone_type = menu_old.tt; tone_val = menu_old.tv;
@@ -2297,11 +2399,12 @@ static void menu_restore(void)
 static int menu_top;
 
 /* One row: white on black; selected = black on white; being changed = black on green. */
-static void menu_row(int item)
+static void menu_row(int row)
 {
-    int slot = item - menu_top;
+    int slot = row - menu_top;
     if (slot < 0 || slot >= MENU_ROWS) return;
-    int y = MENU_Y0 + slot * MENU_PITCH, sel = item == menu_sel;
+    int y = MENU_Y0 + slot * MENU_PITCH, sel = row == menu_sel;
+    if (row >= menu_count()) { lcd_fill(0, y, LCD_W, MENU_ROW_H, C_BLACK); return; }
     uint16_t bg = sel ? (menu_edit ? C_EDIT : C_WHITE) : C_BLACK, fg = sel ? C_BLACK : C_WHITE;
     if (sel) {
         lcd_fill(0, y, 6, MENU_ROW_H, C_BLACK);
@@ -2315,11 +2418,14 @@ static void menu_row(int item)
         lcd_fill(0, y, LCD_W, MENU_ROW_H, C_BLACK);
     }
     int ty = y + (MENU_ROW_H - F_MED->height) / 2;
-    char nm[16] = { menu_key_of[item], menu_key_of[item] == ' ' ? ' ' : '.', ' ' };
-    for (int k = 0; menu_name[item][k]; k++) { nm[3 + k] = menu_name[item][k]; nm[4 + k] = 0; }
+    const char *name = menu_group < 0 ? menu_groups[row].name : menu_name[menu_groups[menu_group].item[row]];
+    char nm[20] = { menu_key_of(row), '.', ' ' };
+    int k = 0;
+    for (; name[k] && k < 16; k++) nm[3 + k] = name[k];
+    nm[3 + k] = 0;
     aa_text(16, ty, F_MED, nm, fg, bg);
-    char v[16];
-    menu_value(item, v);
+    char v[16] = ">";
+    if (menu_group >= 0) menu_value(menu_groups[menu_group].item[row], v);
     aa_text(LCD_W - 18 - aa_width(F_MED, v), ty, F_MED, v, fg, bg);
 }
 
@@ -2329,28 +2435,42 @@ static void menu_rows(void)
 }
 
 /* Move the selection; scroll only when it leaves the visible rows. */
-static void menu_select(int item)
+static void menu_select(int row)
 {
     int old = menu_sel;
-    menu_sel = item;
+    menu_sel = row;
     int top = menu_top;
-    if (item < top) top = item;
-    if (item >= top + MENU_ROWS) top = item - MENU_ROWS + 1;
+    if (row < top) top = row;
+    if (row >= top + MENU_ROWS) top = row - MENU_ROWS + 1;
     if (top != menu_top) { menu_top = top; menu_rows(); }
-    else { menu_row(old); menu_row(item); }
+    else { menu_row(old); menu_row(row); }
+}
+
+/* Title (MENU or the group's name), rows, and the labels over the green and red bars. */
+static void menu_draw(void)
+{
+    clear_band(34, MENU_Y0);
+    aa_text_c(42, F_MED, menu_group < 0 ? "MENU" : menu_groups[menu_group].name, C_WHITE, C_BLACK);
+    separator(70);
+    for (int k = 0; k < MENU_ROWS; k++) clear_band(MENU_Y0 + k * MENU_PITCH + MENU_ROW_H, MENU_Y0 + (k + 1) * MENU_PITCH);
+    clear_band(MENU_Y0 + MENU_ROWS * MENU_PITCH, Y_SOFT);
+    menu_rows();
+    soft_keys("OK", menu_group < 0 ? "EXIT" : "BACK");
+}
+
+static void menu_go(int group, int row)
+{
+    menu_group = group;
+    menu_edit = 0;
+    menu_sel = row;
+    menu_top = row >= MENU_ROWS ? row - MENU_ROWS + 1 : 0;
+    menu_draw();
 }
 
 static void menu_show(void)
 {
     menu_open = 1;
-    menu_edit = 0;
-    clear_band(34, MENU_Y0);
-    aa_text_c(42, F_MED, "MENU", C_WHITE, C_BLACK);
-    separator(70);
-    for (int k = 0; k < MENU_ROWS; k++) clear_band(MENU_Y0 + k * MENU_PITCH + MENU_ROW_H, MENU_Y0 + (k + 1) * MENU_PITCH);
-    clear_band(MENU_Y0 + MENU_ROWS * MENU_PITCH, Y_SOFT);
-    menu_rows();
-    soft_keys("OK", "EXIT");
+    menu_go(-1, menu_last_group);
 }
 
 static void menu_close(void)
@@ -2360,25 +2480,35 @@ static void menu_close(void)
     draw_home();
 }
 
+/* Green bar on a row (or its number key): open a group, start an action, or edit the value. */
+static void menu_enter(int row)
+{
+    if (menu_group < 0) { menu_last_group = row; menu_go(row, 0); return; }
+    int item = menu_groups[menu_group].item[row];
+    if (item == MI_SCAN) { menu_close(); scan_start(); }
+    else if (item == MI_SPECTRUM) { menu_open = 0; menu_edit = 0; draw_home(); spectrum_start(); }
+    else if (item == MI_FDET) { menu_close(); fdet_start(); }
+    else { menu_snapshot(); menu_edit = 1; if (row == menu_sel) menu_row(row); else menu_select(row); }
+}
+
 static void menu_key(char k)
 {
+    int n = menu_count();
     if (!menu_edit) {
-        if (k == K_UP) menu_select((menu_sel + MI_COUNT - 1) % MI_COUNT);
-        else if (k == K_DOWN) menu_select((menu_sel + 1) % MI_COUNT);
-        else if (k == K_MENU && menu_sel == MI_SCAN) { menu_close(); scan_start(); }
-        else if (k == K_MENU && menu_sel == MI_SPECTRUM) { menu_open = 0; menu_edit = 0; draw_home(); spectrum_start(); }
-        else if (k == K_MENU && menu_sel == MI_FDET) { menu_close(); fdet_start(); }
-        else if (k == K_MENU) { menu_snapshot(); menu_edit = 1; menu_row(menu_sel); }
-        else if (k == K_EXIT) menu_close();
-        else for (int i = 0; i < MI_COUNT; i++) if (menu_key_of[i] == k) { menu_snapshot(); menu_edit = 1; menu_select(i); break; }
+        if (k == K_UP) menu_select((menu_sel + n - 1) % n);
+        else if (k == K_DOWN) menu_select((menu_sel + 1) % n);
+        else if (k == K_MENU) menu_enter(menu_sel);
+        else if (k == K_EXIT) { if (menu_group < 0) menu_close(); else menu_go(-1, menu_group); }
+        else for (int r = 0; r < n; r++) if (menu_key_of(r) == k) { menu_enter(r); break; }
         return;
     }
-    if (k == K_UP || k == K_DOWN) menu_change(menu_sel, k == K_UP ? 1 : -1);
-    else if (k == '#') menu_jump(menu_sel);
+    int item = menu_groups[menu_group].item[menu_sel];
+    if (k == K_UP || k == K_DOWN) menu_change(item, k == K_UP ? 1 : -1);
+    else if (k == '#') menu_jump(item);
     else if (k == K_MENU) menu_edit = 0;
     else if (k == K_EXIT) { menu_restore(); menu_edit = 0; menu_rows(); return; }
     else return;
-    if (menu_sel == MI_BAND) menu_rows(); else menu_row(menu_sel);
+    if (item == MI_BAND || item == MI_CHMODE || item == MI_CHAN) menu_rows(); else menu_row(menu_sel);
 }
 
 /* ---------------- commands ---------------- */
@@ -2462,8 +2592,16 @@ static void command(char *cmd)
 {
     for (char *p = cmd; *p; p++) if (*p >= 'a' && *p <= 'z') *p = (char)(*p - 32);
 
-    if (cmd[0] == 0) {
-        return;
+    if (cmd[0] == 0) return;
+    /* A command that changes something brings chip 1 back from dual watch first; queries do not. */
+    if (dw_hop) {
+        int query = 1;
+        for (const char *q = cmd; *q; q++) if (*q == ' ') query = 0;
+        if (!__builtin_strcmp(cmd, "SPEC") || !__builtin_strcmp(cmd, "FDET") || !__builtin_strcmp(cmd, "VFOMODE") ||
+            !__builtin_strcmp(cmd, "SAVE")) query = 0;
+        if (!query) { dw_hop_end(); show_status("RX", C_GREEN); }
+    }
+    if (0) {
     } else if (!__builtin_strcmp(cmd, "PING")) {
         uart_puts("PONG\r\n");
     } else if (!__builtin_strcmp(cmd, "VER")) {
@@ -2490,7 +2628,7 @@ static void command(char *cmd)
         int v;
         if (!parse_int(cmd + 3, &v) || v < 0 || v > 9) { uart_puts("ERR SQ 0-9\r\n"); return; }
         sq_level = v;
-        show_info();
+        show_vfo2();
         uart_puts("SQ "); put_dec(sq_level); uart_puts("\r\n");
     } else if (cmd[0] == 'V' && cmd[1] == 'O' && cmd[2] == 'L' && cmd[3] == ' ') {
         int v;
@@ -2646,14 +2784,13 @@ static void command(char *cmd)
         /* One sweep: 44 points around the current frequency at the menu step, dBm each. */
         uint32_t center = freq10, st = step_list[step_idx];
         audio_close();
-        uart_puts("SPEC "); put_dec((int32_t)st); uart_puts("0 HZ STEP:");
-        for (int i = 0; i < SPEC_N; i++) {
-            wdt_counter_reload();
-            uart_puts(" ");
-            if (radio_tune(center + (uint32_t)(i - SPEC_N / 2) * st)) { delay_ms(2); put_dec(rssi_dbm()); }
-            else uart_puts("X");
-        }
+        int v[SPEC_N];
+        spec_settle = 0;
+        for (int i = 0; i < SPEC_N; i++) { wdt_counter_reload(); v[i] = spec_point(center + (uint32_t)(i - SPEC_N / 2) * st); }
         radio_tune(center);
+        uart_puts("SPEC "); put_dec((int32_t)st); uart_puts("0 HZ STEP, WAIT "); put_dec((int32_t)spec_settle);
+        uart_puts(" MS IN ALL:");
+        for (int i = 0; i < SPEC_N; i++) { uart_puts(" "); if (v[i] == SPEC_NONE) uart_puts("X"); else put_dec(v[i]); }
         uart_puts("\r\n");
     } else if (!__builtin_strcmp(cmd, "FDET")) {
         fdet_start();
@@ -2663,8 +2800,11 @@ static void command(char *cmd)
             int n;
             if (!parse_int(cmd + 3, &n) || n < 1 || n > CH_COUNT) { uart_puts("ERR CH 1-1024\r\n"); return; }
             if (tx_on) { uart_puts("ERR transmitting\r\n"); return; }
-            if (!chan_mode) { vfo_store(); chan_mode = 1; }
-            if (!chan_apply(n - 1)) { uart_puts("ERR empty channel\r\n"); return; }
+            uint8_t c[CH_SIZE];
+            if (!chan_read(n - 1, c)) { uart_puts("ERR empty channel\r\n"); return; }
+            int was = chan_mode;
+            chan_on();
+            if (!chan_apply(n - 1)) { if (!was) chan_leave(); uart_puts("ERR channel outside the bands\r\n"); return; }
             show_freq(); show_status("RX", C_GREEN);
         }
         if (!chan_mode) { uart_puts("CH OFF (VFO MODE)\r\n"); return; }
@@ -2780,10 +2920,12 @@ int main(void)
     cal_load();
     set_load();
     radio_init();
+    vfo_power = power;
     if (chan_mode && !chan_apply(chan_num)) chan_mode = 0;
+    dw_start();                                    /* dual watch is always on at start-up */
     show_freq();
     show_status("RX", C_GREEN);
-    show_info();
+    show_vfo2();
     show_batt();
     meter_scale();
     report_freq();
@@ -2848,6 +2990,7 @@ int main(void)
                 if (spectrum_on) spectrum_stop();
                 if (fdet_on) fdet_stop();
                 if (menu_open) menu_close();
+                if (dw_hop) dw_hop_end();            /* transmit is always on the main VFO or channel */
                 if (tx_start(alarm)) {
                     tx_until = ticks + (uint32_t)tot_list[tot_idx] * 1000u;
                     show_tx();
@@ -2869,6 +3012,7 @@ int main(void)
                 if (scanning) { scan_stop(); pressed = 0; }
                 if (spectrum_on) { spectrum_stop(); pressed = 0; }
                 if (fdet_on) { fdet_stop(); show_status("RX", C_GREEN); pressed = 0; }
+                if (dw_hop) { dw_hop_end(); show_status("RX", C_GREEN); }
                 if (was_dark) pressed = 0;                     /* the first press only wakes the screen */
             }
             const uint16_t rep_keys = (1u << 1) | (1u << 2);   /* up, down repeat when held */
@@ -2930,10 +3074,9 @@ int main(void)
                         if (!changed) show_status("BAD FREQUENCY", C_YELLOW);
                     }
                 } else if (k == '*') {
-                    dw_hop = 0;
                     if (chan_mode) chan_leave();
                     vfo_select(vfo_cur ^ 1);
-                    show_info();
+                    show_vfo2();
                     changed = 1;
                 } else if ((k == K_UP || k == K_DOWN) && chan_mode) {
                     int n = chan_next(chan_num, k == K_UP ? 1 : -1);
@@ -3012,7 +3155,7 @@ int main(void)
         if (scanning && !tx_on && !menu_open) scan_step();
         if (spectrum_on && !tx_on) spectrum_sweep();
         if (fdet_on && !tx_on) fdet_poll();
-        if (dw_on && !chan_mode && !tx_on && !menu_open && !scanning && !spectrum_on && !fdet_on) dw_poll();
+        if (dw_on && !tx_on && !menu_open && !scanning && !spectrum_on && !fdet_on) dw_poll();
 
         if (lit && light_list[light_idx] && !tx_on && !audio_on && !menu_open &&
             (int32_t)(ticks - last_activity) >= (int32_t)light_list[light_idx] * 1000) {
@@ -3021,7 +3164,7 @@ int main(void)
             gpio_bits_reset(GPIOA, GPIO_PINS_9);
         }
 
-        if (!tx_on && (int32_t)(ticks - next_save) >= 0) {
+        if (!tx_on && !dw_hop && (int32_t)(ticks - next_save) >= 0) {
             next_save = ticks + 1000;
             set_autosave();
         }
