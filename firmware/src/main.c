@@ -6,7 +6,7 @@
 #include <stddef.h>
 #include "fonts_aa.h"
 
-#define FW_NAME  "UV98+ open test 38"
+#define FW_NAME  "UV98+ open test 39"
 #define APP_BASE 0x08002800u
 
 static void report_freq(void);
@@ -1926,7 +1926,7 @@ static void show_rows(void)
         char pw[2], right[18], tag[2] = { (char)('A' + i), 0 };
         row_data(i, &f, &md, &sft, &tt, &rt, &tv, &rv, pw, right);
         int rx = act ? audio_on && !dw_hop : dw_heard;  /* this row is being received */
-        uint16_t col = rx ? C_GREEN : act ? C_WHITE : RGB(153, 153, 153);   /* active white, other 60% */
+        uint16_t col = act ? C_WHITE : RGB(153, 153, 153);   /* active white, other 60% */
         uint16_t bg = C_BLACK;
         int yf = i ? Y_FREQ2 : Y_FREQ, yl = i ? Y_LINE2 : Y_LINE1;
         lcd_fill(0, yf - 2, LCD_W, 2, bg);

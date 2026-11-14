@@ -33,7 +33,7 @@ def pick_mode(sat_mode):
     GFSK and GMSK data wide FM (flat audio for a decoder on the audio output); AM AM; SSB, CW, BPSK and
     the rest USB."""
     m = (sat_mode or "").upper()
-    if m.startswith("FM") or "AFSK" in m:
+    if m.startswith("FM") or "AFSK" in m or "SSTV" in m:
         return "NFM"
     if "FSK" in m or "MSK" in m:
         return "FM"
@@ -114,7 +114,10 @@ class UV98:
             raise RadioError(f"{freq_hz / 1e6:.5f} MHz is outside the radio's receive range")
         if mode not in MODES:
             raise RadioError(f"mode must be one of {', '.join(MODES)}")
-        for cmd in (f"M {mode}", f"F {freq_hz / 1e6:.5f}"):
+        cmds = [f"F {freq_hz / 1e6:.5f}"]
+        if self.get_status()["mode"] != mode:
+            cmds.insert(0, f"M {mode}")
+        for cmd in cmds:
             reply = self._cmd(cmd)
             if not any(l.startswith("FREQ") for l in reply):
                 raise RadioError("; ".join(reply) or f"no reply to {cmd}")
