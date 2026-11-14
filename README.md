@@ -18,7 +18,7 @@ Open firmware for the iRadio UV-98 Plus handheld (Radtel RT-880G family, FCC ID 
 ## What you need
 
 - The radio.
-- A programming cable: a USB-serial adapter (FTDI FT232R, 3.3 V logic) wired to the radio's side USB-C port, with D- to the radio's transmit line (processor PA11), D+ to its receive line (PA12), and ground. A plain USB-C cable does nothing. Ours is home-made from another radio's programming cable and a USB-C plug.
+- A programming cable: a USB-serial adapter (FTDI FT232R, 3.3 V logic) wired to the radio's side USB-C port, with D- to the radio's transmit line (processor PA11), D+ to its receive line (PA12), and ground. A plain USB-C cable does nothing. Ours is home-made from another radio's programming cable and a USB-C plug. thanks to https://www.youtube.com/watch?v=ZtfCeFaHtGo
 - A computer with Ubuntu 24.04, either native or in WSL2 on Windows 10/11.
 
 ## Setup
