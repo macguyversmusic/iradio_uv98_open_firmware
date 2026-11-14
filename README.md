@@ -4,15 +4,15 @@ I got sick of people selling simple knowledge or "personalised" firmware.  open 
 
 Open firmware for the iRadio UV-98 Plus handheld (Radtel RT-880G family, FCC ID 2AZSA-6D880), written from scratch, plus the tools to flash it and control the radio from a computer over the programming cable, and a satellite tracker that tunes the radio to downlinks.
 
-**Status: experimental (test 14), run on one UV-98 Plus only.** That radio's calibration values (frequency correction, transmit deviation) are built into `firmware/src/main.c`, so on another radio the frequency may be slightly off until the firmware reads each radio's own calibration from its SPI flash. [FINDINGS.md](FINDINGS.md) lists where those values are.
+**Status: experimental (test 15), run on one UV-98 Plus only.** That radio's calibration values (frequency correction, transmit deviation) are built into `firmware/src/main.c`, so on another radio the frequency may be slightly off until the firmware reads each radio's own calibration from its SPI flash. [FINDINGS.md](FINDINGS.md) lists where those values are.
 
 ## Features
 
 - **Receive:** 18-660 MHz and 840-1300 MHz in FM, NFM, AM and USB. Noise squelch, CTCSS and DCS tone squelch, signal meter.
-- **Transmit:** amateur bands only (all three ITU regions), plus marine VHF capped at MID power. Power MIN, LOW, MID and HIGH from the radio's own calibration. CTCSS and DCS, a 1750 Hz burst on the alarm button, and a time-out timer.
-- **On the radio:** boot splash, high-contrast screen with smooth fonts, and a menu with number shortcuts. Band presets: 10 m, 6 m, air (receive only), 2 m, marine, 220 MHz, 70 cm, 23 cm. The LED is green when receiving, yellow when a signal is held back by the tone squelch, and red when transmitting.
-- **From a computer:** serial commands over the programming cable, and the satellite tracker in [tracker/](tracker/README.md).
-- **Not included:** one VFO only for now, no FM broadcast, no channels yet. Settings are not kept after power-off yet.
+- **Transmit:** amateur bands only (all three ITU regions), plus marine VHF capped at MID power. Power MIN, LOW, MID and HIGH from the radio's own calibration. CTCSS and DCS, a 1750 Hz burst on the alarm button, repeater shift and offset with reverse, and a time-out timer.
+- **On the radio:** boot splash, high-contrast screen with smooth fonts, VFO A and B, and a menu with number shortcuts. Band presets: 10 m, 6 m, air (receive only), 2 m, marine, 220 MHz, 70 cm, 23 cm. The LED is green when receiving, yellow when a signal is held back by the tone squelch, and red when transmitting.
+- **From a computer:** serial commands over the programming cable, including transmit (PTT with a keep-alive), and the satellite tracker in [tracker/](tracker/README.md).
+- **Not included:** no FM broadcast, no channels yet. Settings are not kept after power-off yet.
 
 ## What you need
 
@@ -86,7 +86,7 @@ Switch the radio on normally, then off **without pressing PTT** (see the known p
 
 ```sh
 .venv/bin/python tools/flash.py probe --model uv98                 # optional: connect only, erases nothing
-.venv/bin/python tools/flash.py flash --model uv98 --image bin/uv98plus_openfw_test14.bin --yes
+.venv/bin/python tools/flash.py flash --model uv98 --image bin/uv98plus_openfw_test15.bin --yes
 ```
 
 It takes about 30 seconds: 246 blocks of 1 KB, each acknowledged. When it prints `final reply 6`, switch the radio off and on normally. To go back to stock, flash `uv98plus_V1.16_250915.bin` the same way.
@@ -98,7 +98,8 @@ The flasher checks the image before sending it and writes only the application a
 | Key | Action |
 |---|---|
 | 0-9, then # | Type a frequency in kHz and tune to it (red bar clears the entry) |
-| * | Switch between 145.500 and 433.500 MHz |
+| # (nothing typed) | Reverse: listen on the repeater input; press again to swap back |
+| * | Switch between VFO A and VFO B (each keeps its frequency, mode, step, shift, offset and tones) |
 | Up / down | Tune by the step set in the menu (12.5 kHz by default); held, it repeats |
 | Green bar | Open the menu |
 | PTT2 or monitor (side keys) | Open the squelch while held |
@@ -107,20 +108,22 @@ The flasher checks the image before sending it and writes only the application a
 
 **Menu.** In the menu:
 - Green bar: opens the menu, edits the selected item, and keeps a change. Red bar: undoes a change, or leaves the menu.
-- Up/down: picks an item, or changes its value, which takes effect immediately. Number keys jump straight to an item.
+- Up/down: picks an item, or changes its value, which takes effect immediately. The key shown next to each item (1-9, 0, * and #) jumps straight to it.
 - `#` in a tone item: jumps to the next tone type (off, CTCSS, DCS normal, DCS inverted).
 
 The items are:
-1. Band: 10 m, 6 m, AIR, 2 m, MARINE, 220, 70 cm, 23 cm. Each sets its own mode and step and remembers its last frequency.
+1. Band: 10 m, 6 m, AIR, 2 m, MARINE, 220, 70 cm, 23 cm. Each sets its own mode, step and usual repeater offset (Region 2), switches the shift off, and remembers its last frequency.
 2. Power
-3. Mic gain
-4. TX tone
-5. RX tone
-6. Squelch
-7. Step
-8. Mode
-9. Time-out
-10. Backlight (key 0)
+3. TX tone
+4. RX tone
+5. Shift: off, + or -
+6. Offset: 100 kHz, 500 kHz, 600 kHz, 1, 1.6, 5, 6, 7.6 or 12 MHz
+7. Squelch
+8. Step
+9. Mode
+10. Mic gain (key 0)
+11. Time-out (key *)
+12. Backlight (key #)
 
 **Serial commands** (115200 baud, over the programming cable):
 
@@ -134,15 +137,16 @@ The items are:
 | `POW [MIN\|LOW\|MID\|HIGH]` | Show or set the transmit power (default MIN) |
 | `T [OFF\|88.5\|D023N\|D023I]` | Transmit tone: CTCSS in Hz, or DCS normal / inverted |
 | `RT [OFF\|88.5\|D023N\|D023I]` | Receive tone squelch (FM / NFM) |
+| `SHIFT [OFF\|+\|-]`, `OFFSET [MHz]` | Repeater shift and offset |
+| `VFO [A\|B]` | Show or select the VFO |
+| `PTT ON`, `PTT OFF`, `PTT` | Transmit from the computer. `PTT ON` must be repeated at least every 2 seconds or transmit stops (`PTT TIMEOUT`); band limits, power and the time-out timer apply |
 | `RSSI`, `ADC` | Signal strength; side-key and battery readings |
 | `R1 xx`, `R2 xx` | Read register xx of radio chip 1 or 2 |
 | `FONT 1\|2`, `EDGE 0-3`, `PAL 1\|2` | Screen style (defaults FONT 2, EDGE 2, PAL 2) |
 
-There is no serial transmit command yet; transmitting is only from the radio's own keys.
-
 ## Satellite tracker
 
-`tracker/` is a web page that lists the amateur satellites passing over you (those heard in the last 24 hours on AMSAT's status page) and tunes the radio to a downlink with one click, Doppler-corrected, over the programming cable. Set your location in `tracker/config.json`, then:
+`tracker/` is a web page that lists the amateur satellites passing over you (those heard in the last 24 hours on AMSAT's status page) and tunes the radio to a downlink with one click, Doppler-corrected, over the programming cable, and with Follow Doppler on keeps retuning during the pass. Set your location in `tracker/config.json`, then:
 
 ```sh
 .venv/bin/python tracker/server.py
@@ -179,7 +183,7 @@ If the radio is switched off while transmitting, the radio chip keeps its transm
 |---|---|
 | `setup_ubuntu.sh` | Installs everything (compiler, Python packages in `.venv`) |
 | `firmware/` | Source (`src/main.c`), build (`Makefile`, `rt880_app.ld`), fonts (`src/fonts_aa.h`, made by `tools/mkfont_aa.py`), image checker, and the parts of Artery's AT32F423 library the build uses |
-| `bin/` | The current firmware image and its `SHA256SUMS` |
+| `bin/` | Firmware images and their `SHA256SUMS`; the highest test number is the one to flash |
 | `tools/flash.py` | Bootloader flasher (`probe` / `flash`, `--model uv98`; `--model rt880` for Radtel RT-880, untested) |
 | `tools/backup_spi.py` | 4 MB SPI flash backup (stock firmware) |
 | `tools/extract_upgrade_tool.py` | Extracts the official firmware from iRadio's upgrade tool |

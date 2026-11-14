@@ -1050,12 +1050,13 @@ static const char *const step_name[] = { "100 Hz", "1 kHz", "2.5 kHz", "5 kHz", 
 #define Y_SEP1    178
 #define Y_STATUS  186
 #define STATUS_H  38
-#define Y_INFO    230      /* signal reading: "S9+10  -73 dBm" */
-#define Y_SEP2    254
-#define Y_MSCALE  258      /* meter scale numbers, above the bars */
-#define Y_METER   279
-#define METER_H   15
-#define Y_SOFT    296      /* labels over the green and red bars */
+#define Y_INFO    230
+#define Y_SEP2    252
+#define Y_MLABEL  256
+#define Y_METER   278
+#define METER_H   18
+#define Y_MSCALE  299
+#define Y_SOFT    296      /* labels over the green and red bars (menu only) */
 #define C_EDIT    RGB(0, 210, 0)
 #define CHIP_H    30
 
@@ -1171,6 +1172,19 @@ static void show_chips(void)
     chip_row(Y_CHIPS2, r2, c2, n);
 }
 
+static void show_info(void)
+{
+    if (menu_open) return;
+    char s[24] = "SQ ";
+    int p = 3;
+    s[p++] = (char)('0' + sq_level);
+    for (const char *q = "    STEP "; *q; q++) s[p++] = *q;
+    for (const char *q = step_name[step_idx]; *q; q++) s[p++] = *q;
+    s[p] = 0;
+    lcd_fill(0, Y_INFO, LCD_W, F_SMALL->height, C_BLACK);
+    aa_text_c(Y_INFO, F_SMALL, s, P->dim, C_BLACK);
+}
+
 /* "446.006" large, "25" smaller on the same baseline, centred. */
 static void show_freq(void)
 {
@@ -1273,9 +1287,9 @@ static void show_rssi(int dbm, int noise)
     meter_label_force = 0;
     for (int k = 0; k <= p; k++) shown[k] = s[k];
     int w = aa_width(F_SMALL, s), x = (LCD_W - w) / 2;
-    lcd_fill(0, Y_INFO, x, F_SMALL->height, C_BLACK);
-    lcd_fill(x + w, Y_INFO, LCD_W - x - w, F_SMALL->height, C_BLACK);
-    aa_text(x, Y_INFO, F_SMALL, s, P->light, C_BLACK);
+    lcd_fill(0, Y_MLABEL, x, F_SMALL->height, C_BLACK);
+    lcd_fill(x + w, Y_MLABEL, LCD_W - x - w, F_SMALL->height, C_BLACK);
+    aa_text(x, Y_MLABEL, F_SMALL, s, P->light, C_BLACK);
 }
 
 /* Status banner; remembers the last text so the frequency entry can borrow the banner. */
@@ -1356,16 +1370,17 @@ static void draw_home(void)
     lcd_fill(8, Y_STATUS, LCD_W - 16, 4, C_BLACK);
     lcd_fill(8, Y_STATUS + STATUS_H - 4, LCD_W - 16, 4, C_BLACK);
     clear_band(Y_STATUS + STATUS_H, Y_INFO);
-    clear_band(Y_INFO + F_SMALL->height, Y_MSCALE);
-    clear_band(Y_MSCALE + F_SMALL->height, Y_METER);
+    clear_band(Y_INFO + F_SMALL->height, Y_MLABEL);
+    clear_band(Y_MLABEL + F_SMALL->height, Y_METER);
     clear_band(Y_METER, Y_METER + METER_H);
-    clear_band(Y_METER + METER_H, Y_SOFT);
+    clear_band(Y_METER + METER_H, Y_MSCALE);
+    clear_band(Y_MSCALE + F_SMALL->height, LCD_H);
     top_bar();
     show_freq();
     show_status(status_text, status_fg);
+    show_info();
     show_batt();
     meter_scale();
-    soft_keys("MENU", 0);
     meter_bars = -1;
     meter_label_force = 1;
 }
@@ -1732,6 +1747,7 @@ static void command(char *cmd)
         int v;
         if (!parse_int(cmd + 3, &v) || v < 0 || v > 9) { uart_puts("ERR SQ 0-9\r\n"); return; }
         sq_level = v;
+        show_info();
         uart_puts("SQ "); put_dec(sq_level); uart_puts("\r\n");
     } else if (cmd[0] == 'V' && cmd[1] == 'O' && cmd[2] == 'L' && cmd[3] == ' ') {
         int v;
@@ -1921,9 +1937,9 @@ int main(void)
     radio_init();
     show_freq();
     show_status("RX", C_GREEN);
+    show_info();
     show_batt();
     meter_scale();
-    soft_keys("MENU", 0);
     report_freq();
 
     watchdog_start();
@@ -2022,6 +2038,7 @@ int main(void)
                     if (!changed) show_status("BAD FREQUENCY", C_YELLOW);
                 } else if (k == '*') {
                     vfo_select(vfo_cur ^ 1);
+                    show_info();
                     changed = 1;
                 } else if (k == K_UP || k == K_DOWN) {
                     uint32_t f = k == K_UP ? freq10 + step_list[step_idx] : freq10 - step_list[step_idx];

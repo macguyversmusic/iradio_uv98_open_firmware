@@ -6,7 +6,8 @@ A small web page that lists the amateur satellites passing over you and tunes th
 - **Passes:** worked out for your location, for the next hour or the next 24 hours, with a sky plot.
 - **Downlinks:** from SatNOGS DB, with the uplinks and modes shown alongside.
 - **Tuning:** each downlink the radio can receive gets a Tune button. Clicking it sets the frequency and mode, corrected for Doppler at that moment. FM satellites use NFM; SSB, CW and data downlinks use USB.
-- **Fine tuning:** buttons step the radio 100 Hz or 1 kHz, for following SSB as the Doppler shift changes.
+- **Follow Doppler** (on by default): after a Tune click, the tracker keeps retuning as the shift changes. It retunes when the frequency has moved 50 Hz on USB or 500 Hz on FM, and stops when the satellite sets or you press Stop following.
+- **Fine tuning:** buttons step the radio 100 Hz or 1 kHz. While following, a step is kept as a trim on top of the Doppler correction.
 
 The radio must be running the open firmware (any test from 14 on); the tracker talks to it with the firmware's serial commands.
 
