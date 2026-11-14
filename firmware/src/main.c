@@ -3,7 +3,6 @@
  * burst on the alarm button, 60 s time-out timer, CTCSS/DCS tone squelch on receive (test 11).
  * Pin map and stock sequences: ../FINDINGS.md. BK4819 #1 is the radio; #2 is reset and put to sleep. */
 #include "at32f423.h"
-#include "font.h"
 #include "fonts_aa.h"
 
 #define FW_NAME  "UV98+ open test 14"
@@ -366,23 +365,6 @@ static void lcd_fill(int x, int y, int w, int h, uint16_t col)
     }
 }
 
-/* Glyph at (x, y), scaled 1x or 2x. */
-__attribute__((unused)) static void lcd_char(int x, int y, char ch, int scale, uint16_t fg, uint16_t bg)
-{
-    if (ch < FONT_FIRST || ch > FONT_LAST) ch = '?';
-    const uint16_t *g = font_glyphs[ch - FONT_FIRST];
-    int w = FONT_W * scale, h = FONT_H * scale;
-    lcd_window(x, y, x + w - 1, y + h - 1);
-    for (int col = 0; col < w; col++) {
-        uint16_t mask = (uint16_t)(0x8000u >> (col / scale));
-        for (int row = h - 1; row >= 0; row--) {
-            uint16_t c = (g[row / scale] & mask) ? fg : bg;
-            spi_send((uint8_t)(c >> 8));
-            spi_send((uint8_t)c);
-        }
-    }
-}
-
 /* ---------------- anti-aliased text (fonts_aa.h, 4-bit alpha) ---------------- */
 #define C_BAR      RGB(16, 22, 38)
 #define C_DIM      RGB(120, 130, 150)
@@ -494,14 +476,6 @@ static void splash(void)
     aa_text_c(by + bh + 64, &font_med, "Open Firmware v1.0", C_WHITE, C_BLACK);
     delay_ms(4000);
     lcd_fill(0, 0, LCD_W, LCD_H, C_BLACK);
-}
-
-/* Text on a 15 x 13 grid of 16 x 24 cells; pads the rest of the line. */
-__attribute__((unused)) static void lcd_line(int row, const char *s, uint16_t fg, uint16_t bg)
-{
-    int col = 0;
-    for (; *s && col < LCD_W / FONT_W; col++) lcd_char(col * FONT_W, row * FONT_H, *s++, 1, fg, bg);
-    for (; col < LCD_W / FONT_W; col++) lcd_char(col * FONT_W, row * FONT_H, ' ', 1, fg, bg);
 }
 
 /* ---------------- backlight: DAC1 on PA4 ---------------- */

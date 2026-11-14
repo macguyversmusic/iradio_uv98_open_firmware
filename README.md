@@ -178,23 +178,21 @@ If the radio is switched off while transmitting, the radio chip keeps its transm
 | Path | What it is |
 |---|---|
 | `setup_ubuntu.sh` | Installs everything (compiler, Python packages in `.venv`) |
-| `firmware/` | Source (`src/main.c`), build (`Makefile`, `rt880_app.ld`), fonts, image checker, and the parts of Artery's AT32F423 library used |
-| `bin/` | Firmware images (`SHA256SUMS`); the newest test is the one to flash |
+| `firmware/` | Source (`src/main.c`), build (`Makefile`, `rt880_app.ld`), fonts (`src/fonts_aa.h`, made by `tools/mkfont_aa.py`), image checker, and the parts of Artery's AT32F423 library the build uses |
+| `bin/` | The current firmware image and its `SHA256SUMS` |
 | `tools/flash.py` | Bootloader flasher (`probe` / `flash`, `--model uv98`; `--model rt880` for Radtel RT-880, untested) |
 | `tools/backup_spi.py` | 4 MB SPI flash backup (stock firmware) |
 | `tools/extract_upgrade_tool.py` | Extracts the official firmware from iRadio's upgrade tool |
-| `tools/radtel_vfo.py` | Sets the VFO on the stock firmware by rewriting settings blocks |
 | `tracker/` | Satellite tracker |
-| `analysis/` | Ghidra scripts used to study the stock firmware ([analysis/README.md](analysis/README.md)) |
 | [FINDINGS.md](FINDINGS.md) | Everything worked out about the hardware and protocols, with every test result |
 | [TODO.md](TODO.md) | What is planned |
 
-Not included: Radtel/iRadio firmware, vendor tools, decompiled stock code and datasheets.
+Not included: Radtel/iRadio firmware, vendor tools, decompiled stock code and datasheets. The stock firmware was studied in Ghidra (raw binary, ARM Cortex, base address 0x08002800); the results are in FINDINGS.md.
 
 ## Licence
 
 The code in this repository is licensed under the GNU General Public License version 3 ([LICENSE](LICENSE)).
 
-Additional permission under GNU GPL version 3 section 7: if you modify this program, or any covered work, by linking or combining it with the Artery AT32F423 firmware library (`firmware/lib/at32f423`) or with bitmap glyphs generated from the DejaVu fonts (`firmware/src/font.h`, `firmware/src/fonts_aa.h`), containing parts covered by the terms of their own licences, the licensors of this program grant you additional permission to convey the resulting work.
+Additional permission under GNU GPL version 3 section 7: if you modify this program, or any covered work, by linking or combining it with the Artery AT32F423 firmware library (`firmware/lib/at32f423`) or with bitmap glyphs generated from the DejaVu fonts (`firmware/src/fonts_aa.h`), containing parts covered by the terms of their own licences, the licensors of this program grant you additional permission to convey the resulting work.
 
 Third-party parts keep their own licences; see [ATTRIBUTION.md](ATTRIBUTION.md).

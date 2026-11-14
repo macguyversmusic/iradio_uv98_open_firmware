@@ -23,16 +23,15 @@ APP_END := 0x08040000
 
 all: build/uv98plus_openfw.bin
 
-# src/font.h and src/fonts_aa.h are included in the repository. "make font" regenerates them
+# src/fonts_aa.h is included in the repository. "make font" regenerates it
 # (needs python3-pil and fonts-dejavu-core).
 font:
-	python3 -I tools/mkfont.py src/font.h
 	python3 -I tools/mkfont_aa.py src/fonts_aa.h
 
 build:
 	mkdir -p build
 
-build/main.o: src/font.h src/fonts_aa.h
+build/main.o: src/fonts_aa.h
 
 build/%.o: %.c | build
 	$(CC) $(CFLAGS) -c $< -o $@

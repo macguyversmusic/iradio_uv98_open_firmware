@@ -1,7 +1,7 @@
 # UV-98 Plus / RT-880G: findings (2026-11-13)
 
 Sources: Radtel RT-880 stock firmware V1.16 (`RT-880-V1.16.bin` from https://github.com/nicsure/RT880-WebSerial-Firmware-Flasher, "RT-880 Radio V1.16 2025-09-15"), the radio itself over the programming cable, Artery's AT32F423 datasheet V2.02 (from Artery's website), DualTachyon's RT-890 open firmware (https://github.com/DualTachyon/radtel-rt-890-oefw).
-The official UV-98 Plus V1.16 has the same code as the RT-880 V1.16 (see "Official UV-98 Plus V1.16" below). Function addresses (0x80xxxxx) refer to V1.16. Decompilations are not published; [analysis/README.md](analysis/README.md) explains how to regenerate them.
+The official UV-98 Plus V1.16 has the same code as the RT-880 V1.16 (see "Official UV-98 Plus V1.16" below). Function addresses (0x80xxxxx) refer to V1.16. Decompilations are not published; they were made with Ghidra (raw binary, language ARM:LE:32:Cortex, base address 0x08002800, functions seeded from the interrupt vector table).
 
 ## Processor and memory
 - AT32F423-family register map (clock 0x40023800, flash controller 0x40023C00, GPIO A/B/C at 0x40020000/0400/0800). No AT32F421 or AT32F403 addresses in the firmware.
@@ -179,7 +179,7 @@ Two BK48x9-type chips, each on its own bit-banged 3-wire bus. Protocol for both:
 - The radio's Version menu shows "UV Radio V1.05 2025-02-14" (iRadio build, not Radtel's "RT-880 Radio").
 - https://github.com/rampa069/RT880-misc `RT-880_V1.06_Upgrade_Tool_250417/firmware_data_uv.py` ("Firmware hex data for UV 98 Plus") holds a complete Intel HEX image: 121,596 bytes, 0x08002800-0x080202FC, all record checksums valid, version text "V1.03_241018". Converted to a 251,904-byte image (`uv98plus_V1.03_241018.bin`). `firmware_data.py` = RT-880 V1.06 250417.
 - The repo's `firmware_UV98_1.05.bin` and `firmware_1.06/1.07/1.09/1.10.bin` are truncated: only the first 0xD800 bytes (the first 64 KB address segment) are present, the rest is zero. Not usable for flashing. The UV98 one equals the start of the V1.03 image.
-- Hardware use compared with `analysis/hw_usage.py` (RT-880 V1.16 vs UV-98 Plus V1.03):
+- Hardware use compared between the RT-880 V1.16 and UV-98 Plus V1.03 decompilations:
   - Same: USART6 on PA11/PA12 (mux 8, vector 71); BK4819 #1 PA8/PF6/PC9 and #2 PC7/PC8/PC6; TX amplifier PC15/PB11 with the same on/off routines; SPI3 display PA15/PB3/PB5 with PC13 DC, PC14 reset and an identical ST7789 init; DAC backlight at 0x40007410 (UV levels 0, 60, 68, 76, 255); SPI2 flash PB13-15; keypad rows PC10-12, PD2; PB6 input.
   - Different in the UV build: no USART2 (GPS) interrupt; PA0/PA1 muxed (mux 8) instead of bit-banged; PC0/PC1 read as inputs instead of muxed; PA2, PA10, PB4 not read as inputs (V1.03's start-up pin setup 0x800C29C drives PA2 and PA9 low).
   - Every pin the test firmware drives as an output (PC15, PB11, PA13, PA14, PB0-2, PB10, PA8, PF6, PC9, PC7, PC8, PC6, PC13, PC14) is driven as an output by the UV build too. The test firmware leaves all other pins in their power-on state or as inputs.
