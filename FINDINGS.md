@@ -114,11 +114,16 @@ Two BK48x9-type chips, each on its own bit-banged 3-wire bus. Protocol for both:
 - Tuning (frequency f in 10 Hz units): f + correction word - 0x8000; low 16 bits to 0x38, high bits to 0x39. Band edges and selectors from stock 0x8012A30. The correction words are per radio, read from the SPI flash calibration at 0x20 + band * 0x70. On this radio they are 0x801A (136-174 MHz), 0x8037 (174-240), 0x801E (320-400), 0x8040 (400-480) and 0x8000 elsewhere; `firmware/src/main.c` has this radio's values built in.
 - Receive on: 0x37 = 0x1F0F, 10 ms, 0x30 = 0x0200, 0x30 = 0xBFF1.
 - Receive filter (stock 0x8004FF0): 0x33 bit by band selector (1, 2: bit 0; 3: bit 4; 4: bit 5; 5: bit 1); PF0 low for selectors 3 and 4, high otherwise.
-- Bandwidth 0x43: 0x3028 wide, 0x4048 narrow.
-- Audio mode 0x47 = 0x6040 | mode << 8 (0 mute, 1 FM, 3 tone, 7 AM). Receive gain 0x48 = 0xB000 | volume << 4 | 0xF (FM) or 0xC (AM), from settings 0xAE-0xB1 (this radio 0xB32F / 0xB32C); volume is bits 9-4.
+- Bandwidth 0x43: 0x3028 wide (FM, AM), 0x4048 narrow (NFM, USB). USB also sets 0x73 bit 4, as stock does for SSB.
+- Audio mode 0x47 = 0x6040 | mode << 8 (0 mute, 1 FM, 3 tone, 5 USB, 7 AM). Receive gain 0x48 = 0xB000 | volume << 4 | 0xF (FM) or 0xC (AM, USB), from settings 0xAE-0xB1 (this radio 0xB32F / 0xB32C); volume is bits 9-4.
 - RSSI in dBm = (0x67 & 0x1FF) / 2 - 160. Noise = 0x65 & 0x7F. Glitch = 0x63.
-- Transmit (stock 0x800B22C, then 0x80053F0 / 0x80052D4): deviation 0x40 = 0x34E2 (400-480 MHz calibration block, offset 3); mic gain 0x7D = 0xE940 + settings 0xAD (this radio 0x12, so 0xE952); 0x47 = 0x6140 (mic) or 0x6340 (tone); 0x37 = 0x1D0F, 10 ms, 0x52 = 0x028F, 0x30 = 0x0200, then 0x30 = 0xC1FE (mic) or 0xC3FA (tone). Tone 1: 0x71 = Hz / 10 * 0x67, 0x70 = 0xC000 on. Power 0x36 = level << 10 | 0xFF (0x007F = off). This radio's calibrated levels at 446 MHz: low 0x16, high 0x2C (used with the external amplifier on).
+- Transmit (stock 0x800B22C, then 0x80053F0 / 0x80052D4): deviation 0x40 from the transmit frequency's calibration block, offset 3 (wide) or 10 (narrow), 0x34E2 in every block on this radio; mic gain 0x7D = 0xE940 + the mic gain setting (default 25; stock uses settings 0xAD, 0x12 on this radio); 0x47 = 0x6140 (mic) or 0x6340 (tone); 0x37 = 0x1D0F, 10 ms, 0x52 = 0x028F, 0x30 = 0x0200, then 0x30 = 0xC1FE (mic) or 0xC3FA (tone). Tone 1: 0x71 = Hz / 10 * 0x67, 0x70 = 0xC000 on. Power 0x36 = level << 10 | 0xFF (0x007F = off). This radio's calibrated levels at 446 MHz: low 0x16, high 0x2C (used with the external amplifier on).
 - Transmit off: PC15, PB11 low; 0x36 = 0x007F; 0x33 = 0; 0x30 = 0.
+
+## Channel memory (stock layout, used by channel mode)
+- 1024 channels of 0x30 bytes at SPI 0x4000 (programming region 0x91). The same layout as `struct memory` in CHIRP's `radtel_rt880g.py`, checked byte by byte.
+- +0 mode (0 FM or NFM, 1 AM, 2 USB), +3 narrow, +4-5 RX tone, +6-9 RX frequency and +10-13 TX frequency (10 Hz units, little-endian; FF FF FF FF = empty channel), +14-15 TX tone, +16 power (0 Low, 1 Medium, 2 High), +17 busy lock, +18 bits 4-0 time-out, +19 bit 7 scan remove, +32-47 name.
+- Tones (16 bits, little-endian): bits 13-12 type (01 CTCSS, 10 DCS, 11 DCS inverted, 00 off), bits 11-0 the value (CTCSS in 0.1 Hz; DCS the code read as an octal number, so D023 is 0x013). Also as CHIRP's `struct tone`.
 
 ## Power off and start-up in the stock firmware (V1.16, cross-checked with V1.03)
 - No power-knob detection: nothing in the firmware reacts to the knob. The power voltage monitor interrupt (IRQ 1) goes to the default handler; the only PWC reference (0x40007000) is the clock setup writing the core voltage select; there is no EXINT use. The ADC voltage monitor on PA7 is switched on, but its interrupt only counts conversions. The knob probably cuts the supply directly.

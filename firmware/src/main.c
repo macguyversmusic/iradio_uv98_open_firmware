@@ -6,7 +6,7 @@
 #include <stddef.h>
 #include "fonts_aa.h"
 
-#define FW_NAME  "UV98+ open test 20"
+#define FW_NAME  "UV98+ open test 21"
 #define APP_BASE 0x08002800u
 
 static void report_freq(void);
@@ -2898,7 +2898,9 @@ int main(void)
     int elen = 0;
     uint16_t last_m = 0;
     int last_key = 0, tx_lockout = 0, alarm_count = 0;
-    uint32_t rep_at = 0, green_since = 0;
+    uint32_t rep_at = 0, hold_since = 0;
+    uint16_t hold_key = 0;
+    int hold_done = 0;
     uint64_t prog_hist = 0;
     int green_used = 1;
     uint32_t tx_until = 0;
@@ -2979,19 +2981,38 @@ int main(void)
                 else if ((int32_t)(ticks - rep_at) >= 0) { pressed |= m & rep_keys; rep_at = ticks + 90; }
             }
             last_m = m;
-            const uint16_t green = 1u << 0;
+            const uint16_t green = 1u << 0, hash = 1u << 7, star = 1u << 15;
             if (menu_open && (pressed & green)) green_used = 1;   /* used by the menu: no reopening on release */
             if (!menu_open) {
-                /* Green bar on the home screen: held 1.5 s = key lock on/off, short = menu on release. */
-                if ((m & green) && !(prev_m & green)) { green_since = ticks; green_used = 0; }
-                if ((m & green) && !green_used && (int32_t)(ticks - green_since) >= 1500) {
-                    green_used = 1;
-                    locked = !locked;
-                    show_status(locked ? "KEYS LOCKED" : "KEYS UNLOCKED", C_YELLOW);
-                }
+                /* Green bar on the home screen: menu on release. */
+                if ((m & green) && !(prev_m & green)) green_used = 0;
                 if (!(m & green) && (prev_m & green) && !green_used && !locked && lit) menu_show();
                 pressed &= (uint16_t)~green;
+                /* * (lock symbol) and # (V/M, nothing typed): short press acts on release; held 1.5 s,
+                 * * locks or unlocks the keys and # switches between VFO and channel mode. */
+                uint16_t hk = pressed & (star | (elen ? 0 : hash));
+                if (hk) { hold_key = (hk & star) ? star : hash; hold_since = ticks; hold_done = 0; pressed &= (uint16_t)~hk; }
+                if (hold_key && (m & hold_key) && !hold_done && (int32_t)(ticks - hold_since) >= 1500) {
+                    hold_done = 1;
+                    if (hold_key == star) {
+                        locked = !locked;
+                        show_status(locked ? "KEYS LOCKED" : "KEYS UNLOCKED", C_YELLOW);
+                    } else if (locked) {
+                        show_status("KEYS LOCKED", C_YELLOW);
+                    } else if (!tx_on) {
+                        int changed;
+                        if (chan_mode) { chan_leave(); changed = 1; }
+                        else changed = chan_enter();
+                        if (changed) { show_freq(); show_status("RX", C_GREEN); report_freq(); }
+                    }
+                }
+                if (hold_key && !(m & hold_key)) {
+                    if (!hold_done) pressed |= hold_key;   /* short press: the key's own action below */
+                    hold_key = 0;
+                }
                 if (locked && pressed) { show_status("KEYS LOCKED", C_YELLOW); pressed = 0; }
+            } else {
+                hold_key = 0;
             }
             for (int b = 0; b < 16 && !tx_on; b++) {
                 if (!(pressed & (1u << b))) continue;
@@ -3001,9 +3022,6 @@ int main(void)
                 if (k >= '0' && k <= '9') {
                     if (elen < 7) { entry[elen++] = k; entry[elen] = 0; }
                     show_entry(entry);
-                } else if (k == K_EXIT && !elen) {
-                    if (chan_mode) { chan_leave(); changed = 1; }
-                    else changed = chan_enter();
                 } else if (k == K_EXIT) {
                     elen = 0; entry[0] = 0;
                     show_entry(entry);
