@@ -99,6 +99,8 @@ Two BK48x9-type chips, each on its own bit-banged 3-wire bus. Protocol for both:
   - Starts on 446.00625 NFM.
 - Clock (test 14): the bootloader starts the app on the 8 MHz internal clock (HICK); tests 1-13 ran at 8 MHz. Stock's clock setup (0x8021124: flash psr 0x154, PWC LDO 1.3 V, LICK and HICK on, PLL from HICK with ns 96, ms 1, fr 8, AHB /1, APB2 /1, APB1 /2) gives 48 MHz, because this chip's PLL output is halved (system_at32f423.c: HICK * ns / (ms * fr) / 2). The open firmware now uses the same setup; with fr 4 instead of 8 it would be 96 MHz (VCO 768 MHz either way).
 
+- Test 15 (built 2026-11-14, not yet tested): repeater transmit writes the TX frequency (receive + or - offset, with the TX band's calibration word) to 0x38/0x39 before transmit is enabled, and checks band limits, power and amplifier on the TX frequency; tx_stop retunes receive. VFO A/B; serial PTT with a 2 s keep-alive.
+
 ## Radio chip settings used by the open firmware (BK4819 #1)
 - Start-up (stock 0x8004DC0 without its call to 0x8005698): 0x00 = 0x8000, 10 ms, 0x00 = 0; 0x37 = 0x1D0F; 0x13 = 0x03BE; 0x12 = 0x037B; 0x11 = 0x027B; 0x10 = 0x007A; 0x14 = 0x0019; 0x49 = 0x2A38; 0x7B = 0x8420; 0x33, 0x34, 0x35 = 0; 0x1E = 0x4C58; 0x1F = 0xA656; 0x3E = 0xA037; 0x7D = 0xE950; 0x26 = 0x13A0.
 - Tuning (frequency f in 10 Hz units): f + correction word - 0x8000; low 16 bits to 0x38, high bits to 0x39. Band edges and selectors from stock 0x8012A30. The correction words are per radio, read from the SPI flash calibration at 0x20 + band * 0x70. On this radio they are 0x801A (136-174 MHz), 0x8037 (174-240), 0x801E (320-400), 0x8040 (400-480) and 0x8000 elsewhere; `firmware/src/main.c` has this radio's values built in.
