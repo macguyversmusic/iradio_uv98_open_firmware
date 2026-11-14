@@ -15,7 +15,7 @@ The firmware (`firmware/src/main.c`, `firmware/rt880_app.ld`, `firmware/Makefile
 - Licence: Apache License 2.0, Copyright (c) 2009-2020 Arm Limited ([LICENSES/Apache-2.0.txt](LICENSES/Apache-2.0.txt)).
 
 ### DejaVu fonts (screen font)
-- Where: `firmware/src/font.h` holds 16x24 bitmaps of printable ASCII, generated from DejaVu Sans Mono Bold by `firmware/tools/mkfont.py`. The font file itself is not included.
+- Where: `firmware/src/font.h` holds 16x24 bitmaps of printable ASCII, generated from DejaVu Sans Mono Bold by `firmware/tools/mkfont.py`; `firmware/src/fonts_aa.h` holds anti-aliased bitmaps generated from DejaVu Sans Bold and DejaVu Sans Condensed Bold by `firmware/tools/mkfont_aa.py`. The font files themselves are not included.
 - Licence: Bitstream Vera fonts copyright (c) 2003 Bitstream, Inc.; DejaVu changes are in the public domain; Arev glyphs copyright (c) Tavmjong Bah ([LICENSES/DejaVu-fonts.txt](LICENSES/DejaVu-fonts.txt)).
 
 ## Credits: information used, no code copied

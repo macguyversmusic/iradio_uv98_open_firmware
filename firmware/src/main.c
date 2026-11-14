@@ -4,8 +4,9 @@
  * Pin map and stock sequences: ../FINDINGS.md. BK4819 #1 is the radio; #2 is reset and put to sleep. */
 #include "at32f423.h"
 #include "font.h"
+#include "fonts_aa.h"
 
-#define FW_NAME  "UV98+ open test 11"
+#define FW_NAME  "UV98+ open test 13"
 #define APP_BASE 0x08002800u
 
 /* ---------------- timing ---------------- */
@@ -336,7 +337,7 @@ static void lcd_fill(int x, int y, int w, int h, uint16_t col)
 }
 
 /* Glyph at (x, y), scaled 1x or 2x. */
-static void lcd_char(int x, int y, char ch, int scale, uint16_t fg, uint16_t bg)
+__attribute__((unused)) static void lcd_char(int x, int y, char ch, int scale, uint16_t fg, uint16_t bg)
 {
     if (ch < FONT_FIRST || ch > FONT_LAST) ch = '?';
     const uint16_t *g = font_glyphs[ch - FONT_FIRST];
@@ -352,8 +353,121 @@ static void lcd_char(int x, int y, char ch, int scale, uint16_t fg, uint16_t bg)
     }
 }
 
+/* ---------------- anti-aliased text (fonts_aa.h, 4-bit alpha) ---------------- */
+#define C_BAR      RGB(16, 22, 38)
+#define C_DIM      RGB(120, 130, 150)
+#define C_LIGHT    RGB(205, 210, 220)
+#define C_SEGOFF   RGB(38, 42, 54)
+#define C_CHIP     RGB(30, 90, 200)
+#define C_GREEN_D  RGB(0, 140, 60)
+#define C_ORANGE   RGB(240, 130, 0)
+#define C_PURPLE   RGB(120, 60, 200)
+#define C_TEAL     RGB(0, 125, 135)
+
+static const uint8_t edge_map[4][16] = {
+    { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 },
+    { 0, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 13, 14, 15 },
+    { 0, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 12, 13, 14, 14, 15 },
+    { 0, 4, 5, 7, 8, 9, 9, 10, 11, 12, 12, 13, 13, 14, 14, 15 }
+};
+static int edge = 2;
+/* Screen style, switchable over serial (FONT, EDGE, PAL); defaults chosen on the radio 2026-11-14. */
+typedef struct {
+    uint16_t bar, dim, light, sep, chip_text, mode, pw[4], mic, txt, rxt, b_rx, b_warn, b_tx, b_entry;
+} palette_t;
+static const palette_t palettes[2] = {
+    { RGB(16, 22, 38), RGB(120, 130, 150), RGB(205, 210, 220), RGB(48, 58, 80), RGB(255, 255, 255),
+      RGB(30, 90, 200), { RGB(130, 130, 130), RGB(0, 140, 60), RGB(240, 130, 0), RGB(230, 0, 0) },
+      RGB(130, 130, 130), RGB(120, 60, 200), RGB(0, 125, 135),
+      RGB(0, 95, 50), RGB(150, 100, 0), RGB(200, 0, 0), RGB(30, 70, 160) },
+    { RGB(0, 0, 0), RGB(255, 255, 255), RGB(255, 255, 255), RGB(110, 120, 150), RGB(0, 0, 0),
+      RGB(0, 200, 255), { RGB(180, 180, 180), RGB(0, 230, 0), RGB(255, 170, 0), RGB(255, 70, 70) },
+      RGB(210, 210, 210), RGB(220, 130, 255), RGB(0, 230, 210),
+      RGB(0, 120, 0), RGB(170, 90, 0), RGB(220, 0, 0), RGB(0, 70, 200) },
+};
+static const palette_t *P = &palettes[1];
+static const aafont_t *F_MED = &font_med2, *F_SMALL = &font_small2;
+
+static uint16_t mix565(uint16_t bg, uint16_t fg, int a)
+{
+    int br = bg >> 11, bgr = (bg >> 5) & 63, bb = bg & 31;
+    int fr = fg >> 11, fgr = (fg >> 5) & 63, fb = fg & 31;
+    int r = br + (fr - br) * a / 15, g = bgr + (fgr - bgr) * a / 15, b = bb + (fb - bb) * a / 15;
+    return (uint16_t)(r << 11 | g << 5 | b);
+}
+
+/* One glyph with its top-left corner at (x, y); returns its advance width. */
+static int aa_char(int x, int y, const aafont_t *f, char ch, uint16_t fg, uint16_t bg)
+{
+    uint8_t c = (uint8_t)ch;
+    if (c < f->first || c > f->last) return 0;
+    int w = f->width[c - f->first], h = f->height;
+    if (!w || x < 0 || y < 0 || x + w > LCD_W || y + h > LCD_H) return w;
+    const uint8_t *d = f->data + f->offset[c - f->first];
+    uint16_t ramp[16];
+    for (int a = 0; a < 16; a++) ramp[a] = mix565(bg, fg, edge_map[edge][a]);
+    lcd_window(x, y, x + w - 1, y + h - 1);
+    for (int col = 0; col < w; col++) {
+        for (int row = h - 1; row >= 0; row--) {
+            int k = row * w + col;
+            int a = (k & 1) ? (d[k >> 1] & 0x0F) : (d[k >> 1] >> 4);
+            spi_send((uint8_t)(ramp[a] >> 8));
+            spi_send((uint8_t)ramp[a]);
+        }
+    }
+    return w;
+}
+
+static int aa_width(const aafont_t *f, const char *s)
+{
+    int w = 0;
+    for (; *s; s++) {
+        uint8_t c = (uint8_t)*s;
+        if (c >= f->first && c <= f->last) w += f->width[c - f->first];
+    }
+    return w;
+}
+
+static int aa_text(int x, int y, const aafont_t *f, const char *s, uint16_t fg, uint16_t bg)
+{
+    for (; *s; s++) x += aa_char(x, y, f, *s, fg, bg);
+    return x;
+}
+
+static void aa_text_c(int y, const aafont_t *f, const char *s, uint16_t fg, uint16_t bg)
+{
+    aa_text((LCD_W - aa_width(f, s)) / 2, y, f, s, fg, bg);
+}
+
+/* Filled rectangle with rounded corners (radius 4); the corners keep what was there. */
+static void fill_rrect(int x, int y, int w, int h, uint16_t col)
+{
+    static const uint8_t inset[4] = { 3, 2, 1, 1 };
+    for (int k = 0; k < 4; k++) {
+        lcd_fill(x + inset[k], y + k, w - 2 * inset[k], 1, col);
+        lcd_fill(x + inset[k], y + h - 1 - k, w - 2 * inset[k], 1, col);
+    }
+    lcd_fill(x, y + 4, w, h - 8, col);
+}
+
+/* Boot splash: the callsign inverted (black on white) with two lines under it, held 4 s. Always this callsign. */
+#define SPLASH_CALL "M0FCC"
+static void splash(void)
+{
+    lcd_fill(0, 0, LCD_W, LCD_H, C_BLACK);
+    lcd_fill(0, 26, LCD_W, 3, C_YELLOW);
+    lcd_fill(0, 291, LCD_W, 3, C_YELLOW);
+    const int bx = 8, by = 64, bw = LCD_W - 16, bh = font_call.height + 8;
+    fill_rrect(bx, by, bw, bh, C_WHITE);
+    aa_text_c(by + 4, &font_call, SPLASH_CALL, C_BLACK, C_WHITE);
+    aa_text_c(by + bh + 28, &font_med, "iRadio UV98+", C_YELLOW, C_BLACK);
+    aa_text_c(by + bh + 64, &font_med, "Open Firmware v1.0", C_WHITE, C_BLACK);
+    delay_ms(4000);
+    lcd_fill(0, 0, LCD_W, LCD_H, C_BLACK);
+}
+
 /* Text on a 15 x 13 grid of 16 x 24 cells; pads the rest of the line. */
-static void lcd_line(int row, const char *s, uint16_t fg, uint16_t bg)
+__attribute__((unused)) static void lcd_line(int row, const char *s, uint16_t fg, uint16_t bg)
 {
     int col = 0;
     for (; *s && col < LCD_W / FONT_W; col++) lcd_char(col * FONT_W, row * FONT_H, *s++, 1, fg, bg);
@@ -801,6 +915,7 @@ static void tx_stop(void)
     bk1_write(0x30, 0x0200);
     tx_on = 0;
     tx_burst = 0;
+    gpio_bits_reset(GPIOA, GPIO_PINS_14);
     radio_mode();
     radio_tune(freq10);
 }
@@ -859,55 +974,6 @@ static void fmt_freq(char *out, uint32_t f)   /* "MMMM.mmmmm" with leading space
     out[p] = 0;
 }
 
-static void show_freq(void)
-{
-    char s[16];
-    fmt_freq(s, freq10);
-    char big[8];
-    int i = 0;
-    for (; s[i] && i < 7; i++) big[i] = s[i];        /* "145.800" / "446.006" */
-    big[i] = 0;
-    int x = (LCD_W - 7 * FONT_W * 2) / 2;
-    for (int k = 0; k < 7; k++) lcd_char(x + k * FONT_W * 2, 36, big[k] ? big[k] : ' ', 2, C_WHITE, C_BLACK);
-    char line[16];
-    int p = 0;
-    for (int k = 0; s[k]; k++) line[p++] = s[k];
-    line[p++] = ' ';
-    for (const char *m = mode_name[mode]; *m; m++) line[p++] = *m;
-    line[p] = 0;
-    lcd_line(4, line, C_GREEN, C_BLACK);
-}
-
-static void show_rssi(int dbm, int noise)
-{
-    char s[16] = "RSSI ";
-    int p = 5;
-    int v = dbm < 0 ? -dbm : dbm;
-    if (dbm < 0) s[p++] = '-';
-    char t[4]; int n = 0;
-    do { t[n++] = (char)('0' + v % 10); v /= 10; } while (v);
-    while (n) s[p++] = t[--n];
-    s[p++] = ' '; s[p++] = 'N';
-    v = noise; n = 0;
-    do { t[n++] = (char)('0' + v % 10); v /= 10; } while (v);
-    while (n) s[p++] = t[--n];
-    s[p++] = ' '; s[p++] = 'S'; s[p++] = 'Q'; s[p++] = (char)('0' + sq_level);
-    s[p] = 0;
-    lcd_line(6, s, C_WHITE, C_BLACK);
-    int bars = (dbm + 130) / 5;           /* -130 dBm -> 0, -55 dBm -> 15 */
-    if (bars < 0) bars = 0;
-    if (bars > 15) bars = 15;
-    char b[16];
-    for (int k = 0; k < 15; k++) b[k] = k < bars ? '#' : '.';
-    b[15] = 0;
-    lcd_line(7, b, C_GREEN, C_BLACK);
-}
-
-static void show_status(const char *s, uint16_t fg)
-{
-    lcd_line(9, s, fg, C_BLACK);
-}
-
 /* Tone as text: "T88.5" for CTCSS, "D023N" / "D023I" for DCS, "" when off. */
 static int tone_text_of(int type, uint16_t val, char *s)
 {
@@ -931,25 +997,252 @@ static int tone_text_of(int type, uint16_t val, char *s)
 }
 static int tone_text(char *s) { return tone_text_of(tone_type, tone_val, s); }
 
-/* "TX LOW T88.5", "TX MIN 1750" */
+/* ---------------- home screen (240 x 320) ---------------- */
+#define Y_FREQ    42
+#define Y_CHIPS1  104
+#define Y_CHIPS2  140
+#define Y_SEP1    178
+#define Y_STATUS  186
+#define STATUS_H  38
+#define Y_INFO    230
+#define Y_SEP2    252
+#define Y_MLABEL  256
+#define Y_METER   278
+#define METER_H   18
+#define Y_MSCALE  299
+#define CHIP_H    30
+
+static void separator(int y)
+{
+    lcd_fill(14, y, LCD_W - 28, 1, P->sep);
+}
+
+static void top_bar(void)
+{
+    lcd_fill(0, 0, LCD_W, 34, P->bar);
+    aa_text(10, (34 - F_SMALL->height) / 2, F_SMALL, "UV98+  OPEN", P->dim, P->bar);
+    separator(Y_SEP1);
+    separator(Y_SEP2);
+}
+
+/* Battery from PA7 with the stock formula ADC * 3 / 51 + 2 (0.1 V), gauge 6.8-8.4 V. */
+static void show_batt(void)
+{
+    int v = (int)adc_read(ADC_CHANNEL_7) * 3 / 51 + 2;
+    char s[8];
+    s[0] = (char)('0' + v / 10 % 10); s[1] = '.'; s[2] = (char)('0' + v % 10); s[3] = 'V'; s[4] = 0;
+    int ix = LCD_W - 40, iy = 11;
+    lcd_fill(ix - 52, 4, 52, 26, P->bar);
+    aa_text(ix - 6 - aa_width(F_SMALL, s), (34 - F_SMALL->height) / 2, F_SMALL, s, P->light, P->bar);
+    lcd_fill(ix, iy, 26, 12, P->light);
+    lcd_fill(ix + 2, iy + 2, 22, 8, P->bar);
+    lcd_fill(ix + 26, iy + 3, 3, 6, P->light);
+    int fill = (v - 68) * 20 / 16;
+    if (fill < 0) fill = 0;
+    if (fill > 20) fill = 20;
+    if (fill) lcd_fill(ix + 3, iy + 3, fill, 6, v <= 72 ? C_RED : C_GREEN);
+}
+
+/* A row of rounded labels, centred. */
+#define CHIP_PAD 8
+#define CHIP_GAP 8
+static void chip_row(int y, const char *const *txt, const uint16_t *bg, int n)
+{
+    int total = 0;
+    for (int k = 0; k < n; k++) total += aa_width(F_SMALL, txt[k]) + 2 * CHIP_PAD + (k ? CHIP_GAP : 0);
+    lcd_fill(0, y, LCD_W, CHIP_H, C_BLACK);
+    int x = (LCD_W - total) / 2;
+    for (int k = 0; k < n; k++) {
+        int w = aa_width(F_SMALL, txt[k]) + 2 * CHIP_PAD;
+        fill_rrect(x, y, w, CHIP_H, bg[k]);
+        aa_text(x + CHIP_PAD, y + (CHIP_H - F_SMALL->height) / 2, F_SMALL, txt[k], P->chip_text, bg[k]);
+        x += w + CHIP_GAP;
+    }
+}
+
+/* "TX 88.5", "RX D023N" */
+static int tone_chip_text(char *s, const char *pre, int type, uint16_t val)
+{
+    char t[12];
+    if (!tone_text_of(type, val, t)) return 0;
+    int p = 0;
+    for (; *pre; pre++) s[p++] = *pre;
+    for (const char *q = t[0] == 'T' ? t + 1 : t; *q; q++) s[p++] = *q;
+    s[p] = 0;
+    return 1;
+}
+
+static void show_chips(void)
+{
+    char mic[8] = "MIC ", tx[16], rx[16];
+    mic[4] = (char)('0' + mic_gain / 10); mic[5] = (char)('0' + mic_gain % 10); mic[6] = 0;
+    const char *r1[3] = { mode_name[mode], power_name[power], mic };
+    const uint16_t c1[3] = { P->mode, P->pw[power], P->mic };
+    chip_row(Y_CHIPS1, r1, c1, 3);
+    const char *r2[2];
+    uint16_t c2[2];
+    int n = 0;
+    if (tone_chip_text(tx, "TX ", tone_type, tone_val)) { r2[n] = tx; c2[n++] = P->txt; }
+    if (tone_chip_text(rx, "RX ", rx_tone_type, rx_tone_val)) { r2[n] = rx; c2[n++] = P->rxt; }
+    chip_row(Y_CHIPS2, r2, c2, n);
+}
+
+static void show_info(void)
+{
+    char s[24] = "SQ ";
+    int p = 3;
+    s[p++] = (char)('0' + sq_level);
+    const char *step = "    STEP 12.5 kHz";
+    for (; *step; step++) s[p++] = *step;
+    s[p] = 0;
+    lcd_fill(0, Y_INFO, LCD_W, F_SMALL->height, C_BLACK);
+    aa_text_c(Y_INFO, F_SMALL, s, P->dim, C_BLACK);
+}
+
+/* "446.006" large, "25" smaller on the same baseline, centred. */
+static void show_freq(void)
+{
+    char s[16], big[12], small[4];
+    fmt_freq(s, freq10);
+    int dot = 0;
+    while (s[dot] && s[dot] != '.') dot++;
+    int i = 0;
+    for (; i < dot + 4 && s[i]; i++) big[i] = s[i];
+    big[i] = 0;
+    int j = 0;
+    for (; s[i] && j < 2; i++) small[j++] = s[i];
+    small[j] = 0;
+    int wb = aa_width(&font_big, big), ws = aa_width(F_MED, small) + 4;
+    if (wb + ws > LCD_W - 8) ws = 0;
+    lcd_fill(0, Y_FREQ, LCD_W, font_big.height, C_BLACK);
+    int x = aa_text((LCD_W - wb - ws) / 2, Y_FREQ, &font_big, big, C_WHITE, C_BLACK);
+    if (ws) aa_text(x + 4, Y_FREQ + font_big.baseline - F_MED->baseline, F_MED, small, P->light, C_BLACK);
+    show_chips();
+}
+
+/* Signal meter at the bottom: 20 segments, 12 up to S9 (4.5 dB each), 8 above S9 (5 dB each, to
+ * S9+40), white up to S9 and red above. S9 = -93 dBm above 30 MHz, -73 dBm below (IARU). Only changed
+ * segments are redrawn. */
+#define NSEG 20
+#define SEG_W 9
+#define SEG_PITCH 11
+#define SEG_X ((LCD_W - (NSEG - 1) * SEG_PITCH - SEG_W) / 2)
+static int meter_bars = -1;
+static int meter_label_force = 1;
+
+
+/* Scale under the meter, CB style: white 1-9, red above S9. Segment n ends at S-unit n * 4 / 3. */
+static void meter_scale(void)
+{
+    static const char *const lab[] = { "1", "3", "5", "7", "9", "+20", "+40" };
+    static const uint8_t pos3[] = { 4, 12, 20, 28, 36, 48, 60 };   /* boundary in thirds of a segment */
+    lcd_fill(0, Y_MSCALE, LCD_W, F_SMALL->height, C_BLACK);
+    for (unsigned k = 0; k < sizeof pos3; k++) {
+        int cx = SEG_X + pos3[k] * SEG_PITCH / 3 - 1;
+        int w = aa_width(F_SMALL, lab[k]);
+        int x = cx - w / 2;
+        if (x < 0) x = 0;
+        if (x + w > LCD_W) x = LCD_W - w;
+        aa_text(x, Y_MSCALE, F_SMALL, lab[k], k < 5 ? C_WHITE : RGB(255, 40, 40), C_BLACK);
+    }
+}
+
+static void show_rssi(int dbm, int noise)
+{
+    (void)noise;
+    int s9 = freq10 < 3000000 ? -73 : -93;
+    int rel = dbm - (s9 - 54);                    /* dB above S0 */
+    int bars = rel <= 0 ? 0 : rel < 54 ? rel * 2 / 9 : 12 + (rel - 54) / 5;
+    if (bars > NSEG) bars = NSEG;
+    for (int k = 0; k < NSEG; k++) {
+        int on = k < bars;
+        if (meter_bars >= 0 && on == (k < meter_bars)) continue;
+        uint16_t col = !on ? C_SEGOFF : k < 12 ? C_WHITE : RGB(255, 40, 40);
+        lcd_fill(SEG_X + k * SEG_PITCH, Y_METER, SEG_W, METER_H, col);
+    }
+    meter_bars = bars;
+    /* "S7  -105 dBm", "S9+20  -73 dBm" */
+    char s[24];
+    int p = 0;
+    s[p++] = 'S';
+    if (rel < 54) {
+        int su = rel / 6;
+        if (su < 0) su = 0;
+        s[p++] = (char)('0' + su);
+    } else {
+        s[p++] = '9';
+        int over = (rel - 54) / 10 * 10;
+        if (over) { s[p++] = '+'; if (over >= 10) s[p++] = (char)('0' + over / 10 % 10); s[p++] = '0'; }
+    }
+    s[p++] = ' '; s[p++] = ' ';
+    int v = dbm < 0 ? -dbm : dbm;
+    if (dbm < 0) s[p++] = '-';
+    char d[4]; int n = 0;
+    do { d[n++] = (char)('0' + v % 10); v /= 10; } while (v);
+    while (n) s[p++] = d[--n];
+    s[p++] = ' '; s[p++] = 'd'; s[p++] = 'B'; s[p++] = 'm'; s[p] = 0;
+    /* Redraw only when the text changes, and only clear the margins, so it does not flicker. */
+    static char shown[24];
+    if (!meter_label_force && !__builtin_strcmp(s, shown)) return;
+    meter_label_force = 0;
+    for (int k = 0; k <= p; k++) shown[k] = s[k];
+    int w = aa_width(F_SMALL, s), x = (LCD_W - w) / 2;
+    lcd_fill(0, Y_MLABEL, x, F_SMALL->height, C_BLACK);
+    lcd_fill(x + w, Y_MLABEL, LCD_W - x - w, F_SMALL->height, C_BLACK);
+    aa_text(x, Y_MLABEL, F_SMALL, s, P->light, C_BLACK);
+}
+
+/* Status banner; remembers the last text so the frequency entry can borrow the banner. */
+static const char *status_text = "RX";
+static uint16_t status_fg = C_GREEN;
+static void banner(const char *s, uint16_t bg)
+{
+    fill_rrect(8, Y_STATUS, LCD_W - 16, STATUS_H, bg);
+    aa_text_c(Y_STATUS + (STATUS_H - F_MED->height) / 2, F_MED, s, C_WHITE, bg);
+}
+
+static void show_status(const char *s, uint16_t fg)
+{
+    status_text = s;
+    status_fg = fg;
+    banner(s, fg == C_RED ? P->b_tx : fg == C_YELLOW ? P->b_warn : P->b_rx);
+}
+
+/* "TX LOW", "TX LOW 1750" */
 static void show_tx(void)
 {
-    char s[20] = "TX ";
-    int p = 3;
+    static char s[20];
+    int p = 0;
+    s[p++] = 'T'; s[p++] = 'X'; s[p++] = ' ';
     for (const char *n = power_name[power]; *n; n++) s[p++] = *n;
-    s[p++] = ' ';
-    if (tx_burst) { s[p++] = '1'; s[p++] = '7'; s[p++] = '5'; s[p++] = '0'; s[p] = 0; }
-    else tone_text(s + p);
+    if (tx_burst) { s[p++] = ' '; s[p++] = '1'; s[p++] = '7'; s[p++] = '5'; s[p++] = '0'; }
+    s[p] = 0;
     show_status(s, C_RED);
 }
 
+/* Frequency being typed, shown in the banner; empty restores the status. */
 static void show_entry(const char *e)
 {
-    char s[16] = "KHZ ";
-    int p = 4;
-    for (; *e && p < 15; e++) s[p++] = *e;
-    s[p] = 0;
-    lcd_line(10, s, C_YELLOW, C_BLACK);
+    if (!*e) { show_status(status_text, status_fg); return; }
+    char s[20];
+    int p = 0;
+    for (; *e && p < 10; e++) s[p++] = *e;
+    s[p++] = ' '; s[p++] = 'k'; s[p++] = 'H'; s[p++] = 'z'; s[p] = 0;
+    banner(s, P->b_entry);
+}
+
+/* Redraw everything after a style change. */
+static void draw_home(void)
+{
+    lcd_fill(0, 0, LCD_W, LCD_H, C_BLACK);
+    top_bar();
+    show_freq();
+    show_status(status_text, status_fg);
+    show_info();
+    show_batt();
+    meter_scale();
+    meter_bars = -1;
+    meter_label_force = 1;
 }
 
 /* ---------------- commands ---------------- */
@@ -1061,6 +1354,7 @@ static void command(char *cmd)
         int v;
         if (!parse_int(cmd + 3, &v) || v < 0 || v > 9) { uart_puts("ERR SQ 0-9\r\n"); return; }
         sq_level = v;
+        show_info();
         uart_puts("SQ "); put_dec(sq_level); uart_puts("\r\n");
     } else if (cmd[0] == 'V' && cmd[1] == 'O' && cmd[2] == 'L' && cmd[3] == ' ') {
         int v;
@@ -1086,6 +1380,7 @@ static void command(char *cmd)
                 uart_puts("ERR T OFF, T 88.5 (CTCSS) or T D023N / T D023I (DCS)\r\n"); return;
             }
             if (tx_on) tx_tone();
+            show_chips();
         }
         char s[12];
         uart_puts("T "); uart_puts(tone_text(s) ? s : "OFF"); uart_puts("\r\n");
@@ -1095,6 +1390,7 @@ static void command(char *cmd)
                 uart_puts("ERR RT OFF, RT 88.5 (CTCSS) or RT D023N / RT D023I (DCS)\r\n"); return;
             }
             if (!tx_on) rx_tone();
+            show_chips();
         }
         char s[12];
         uart_puts("RT "); uart_puts(tone_text_of(rx_tone_type, rx_tone_val, s) ? s : "OFF"); uart_puts("\r\n");
@@ -1105,14 +1401,32 @@ static void command(char *cmd)
             if (n < 0) { uart_puts("ERR POW MIN, LOW, MID or HIGH\r\n"); return; }
             if (tx_on) { uart_puts("ERR transmitting\r\n"); return; }
             power = n;
+            show_chips();
         }
         uart_puts("POW "); uart_puts(power_name[power]); uart_puts("\r\n");
+    } else if (cmd[0] == 'F' && cmd[1] == 'O' && cmd[2] == 'N' && cmd[3] == 'T' && cmd[4] == ' ' &&
+               (cmd[5] == '1' || cmd[5] == '2') && !cmd[6]) {
+        F_MED = cmd[5] == '1' ? &font_med : &font_med2;
+        F_SMALL = cmd[5] == '1' ? &font_small : &font_small2;
+        draw_home();
+        uart_puts("FONT "); uart_putc(cmd[5]); uart_puts("\r\n");
+    } else if (cmd[0] == 'E' && cmd[1] == 'D' && cmd[2] == 'G' && cmd[3] == 'E' && cmd[4] == ' ' &&
+               cmd[5] >= '0' && cmd[5] <= '3' && !cmd[6]) {
+        edge = cmd[5] - '0';
+        draw_home();
+        uart_puts("EDGE "); uart_putc(cmd[5]); uart_puts("\r\n");
+    } else if (cmd[0] == 'P' && cmd[1] == 'A' && cmd[2] == 'L' && cmd[3] == ' ' &&
+               (cmd[4] == '1' || cmd[4] == '2') && !cmd[5]) {
+        P = &palettes[cmd[4] - '1'];
+        draw_home();
+        uart_puts("PAL "); uart_putc(cmd[4]); uart_puts("\r\n");
     } else if (cmd[0] == 'M' && cmd[1] == 'I' && cmd[2] == 'C' && (cmd[3] == ' ' || cmd[3] == 0)) {
         int v;
         if (cmd[3] == ' ') {
             if (!parse_int(cmd + 4, &v) || v < 0 || v > 31) { uart_puts("ERR MIC 0-31\r\n"); return; }
             mic_gain = v;
             if (tx_on) bk1_write(0x7D, (uint16_t)(0xE940 + mic_gain));
+            show_chips();
         }
         uart_puts("MIC "); put_dec(mic_gain); uart_puts("\r\n");
     } else if (!__builtin_strcmp(cmd, "HELP")) {
@@ -1181,12 +1495,15 @@ int main(void)
     lcd_init();
     lcd_fill(0, 0, LCD_W, LCD_H, C_BLACK);
     backlight(255);
-    lcd_line(0, "OPEN FW TEST 11", C_YELLOW, C_BLUE);
+    splash();
+    top_bar();
 
     radio_init();
     show_freq();
     show_status("RX", C_GREEN);
-    show_entry("");
+    show_info();
+    show_batt();
+    meter_scale();
     report_freq();
 
     watchdog_start();
@@ -1198,7 +1515,7 @@ int main(void)
     uint16_t last_m = 0;
     int last_key = 0, tx_lockout = 0, alarm_count = 0;
     uint32_t tx_until = 0;
-    uint32_t next_scan = 0, next_rssi = 0, next_blink = 0, next_sq = 0;
+    uint32_t next_scan = 0, next_rssi = 0, next_sq = 0, next_batt = 10000;
     int last_rssi = -160, last_noise = 127, open_count = 0, close_count = 0, last_side = SIDE_NONE;
 
     for (;;) {
@@ -1328,6 +1645,13 @@ int main(void)
             } else {
                 open_count = close_count = 0;
             }
+            /* LEDs: green = audio open (audio_open/close), yellow = carrier held back by the tone
+             * squelch, red = transmit (tx_start/tx_stop), off otherwise. */
+            if (!audio_on && carrier && !tone_ok) gpio_bits_set(GPIOA, GPIO_PINS_13 | GPIO_PINS_14);
+            else {
+                gpio_bits_reset(GPIOA, GPIO_PINS_14);
+                if (!audio_on) gpio_bits_reset(GPIOA, GPIO_PINS_13);
+            }
         }
 
         if (!tx_on && (int32_t)(ticks - next_rssi) >= 0) {
@@ -1335,9 +1659,10 @@ int main(void)
             show_rssi(last_rssi, last_noise);
         }
 
-        if (!tx_on && (int32_t)(ticks - next_blink) >= 0) {
-            next_blink = ticks + 500;
-            GPIOA->odt ^= GPIO_PINS_14;
+        if (!tx_on && (int32_t)(ticks - next_batt) >= 0) {
+            next_batt = ticks + 10000;
+            show_batt();
         }
+
     }
 }

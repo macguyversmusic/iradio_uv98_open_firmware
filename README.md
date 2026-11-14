@@ -4,7 +4,7 @@ I got sick of people selling simple knowledge or "personalised" firmware.  open 
 
 Open firmware for the iRadio UV-98 Plus handheld (Radtel RT-880G family, FCC ID 2AZSA-6D880), written from scratch. This repository also holds the tools and notes needed to repeat the work from zero.
 
-**Status: experimental test firmware (test 11). It is not yet a usable everyday radio.** It has been run on one UV-98 Plus only. That radio's calibration values (frequency correction words, transmit deviation) are built into `firmware/src/main.c`. On another radio the frequency may be slightly off until the firmware reads each radio's own calibration from its SPI flash; [FINDINGS.md](FINDINGS.md) lists where those values are.
+**Status: experimental test firmware (test 13). It is not yet a usable everyday radio.** It has been run on one UV-98 Plus only. That radio's calibration values (frequency correction words, transmit deviation) are built into `firmware/src/main.c`. On another radio the frequency may be slightly off until the firmware reads each radio's own calibration from its SPI flash; [FINDINGS.md](FINDINGS.md) lists where those values are.
 
 | Works on that radio | Test |
 |---|---|
@@ -19,6 +19,7 @@ Open firmware for the iRadio UV-98 Plus handheld (Radtel RT-880G family, FCC ID 
 | Power levels from calibration: LOW voice crystal clear; LOW, MID and HIGH step up in battery current as expected (no RF meter used); 2 m transmit; 60 s time-out timer | 11 |
 | CTCSS 88.5 and DCS 023 normal / inverted on transmit and as tone squelch on receive, each checked against a UV-5R | 11 |
 | USB receive (a carrier 1 kHz up gives a steady 1 kHz tone); starts on PMR 1 NFM | 11 |
+| Boot splash; new screen with anti-aliased fonts, coloured labels, status banner, battery gauge and a CB-style S-meter; LED green = receiving, yellow = signal held back by the tone squelch, red = transmitting | 12-13 |
 
 Next steps: channels and settings from the radio's SPI flash, menus (mic gain, power, tones and the rest), a stock-style screen, automatic gain control for USB, the second radio chip, FM broadcast and scanning.
 
@@ -89,7 +90,7 @@ Switch the radio on normally, then switch it off **without pressing PTT** (see t
 
 ```sh
 python3 tools/flash.py probe --model uv98                  # optional: connect only, erases nothing
-python3 tools/flash.py flash --model uv98 --image bin/uv98plus_openfw_test11.bin --yes
+python3 tools/flash.py flash --model uv98 --image bin/uv98plus_openfw_test13.bin --yes
 ```
 
 The flash takes about 30 seconds: 246 blocks of 1 KB, each acknowledged. When it prints `final reply 6`, switch the radio off and then on normally.
@@ -103,7 +104,7 @@ cd firmware
 make
 ```
 
-This produces `firmware/build/uv98plus_openfw.bin`. The code is identical to `bin/uv98plus_openfw_test11.bin`; only the build time that the `VER` command prints differs.
+This produces `firmware/build/uv98plus_openfw.bin`. The code is identical to `bin/uv98plus_openfw_test13.bin`; only the build time that the `VER` command prints differs.
 
 ## Using the test firmware
 
@@ -131,6 +132,7 @@ The same cable gives a serial console at 115200 baud:
 | `RT [OFF\|88.5\|D023N\|D023I]` | Receive tone squelch: audio opens only with that tone (FM / NFM) |
 | `RSSI`, `ADC` | Signal strength; side-key and battery ADC readings |
 | `R1 xx`, `R2 xx` | Read register xx of radio chip 1 or 2 |
+| `FONT 1\|2`, `EDGE 0-3`, `PAL 1\|2` | Screen style: narrow or regular letters, letter-edge weight, normal or high-contrast colours (defaults FONT 2, EDGE 2, PAL 2) |
 
 ## Files
 
@@ -138,10 +140,11 @@ The same cable gives a serial console at 115200 baud:
 |---|---|
 | `firmware/src/main.c` | The firmware |
 | `firmware/rt880_app.ld`, `firmware/Makefile` | Linker script (app at 0x08002800, stack 0x20009000) and build |
-| `firmware/src/font.h`, `firmware/tools/mkfont.py` | 16x24 screen font and its generator |
+| `firmware/src/fonts_aa.h`, `firmware/tools/mkfont_aa.py` | Anti-aliased screen fonts (DejaVu) and their generator |
+| `firmware/src/font.h`, `firmware/tools/mkfont.py` | The earlier 16x24 font and its generator |
 | `firmware/tools/check_image.py` | Checks an image before it is flashed (size, stack pointer, reset vector) |
 | `firmware/lib/at32f423/` | The parts of Artery's AT32F423 library the build uses (see [ATTRIBUTION.md](ATTRIBUTION.md)) |
-| `bin/uv98plus_openfw_test11.bin` | Test 11 image, the one now on our radio (`bin/SHA256SUMS`); `bin/uv98plus_openfw_test8.bin` is the earlier test 8 |
+| `bin/uv98plus_openfw_test13.bin` | Test 13 image, the one now on our radio (`bin/SHA256SUMS`); test 8 and test 11 images are kept as well |
 | `tools/flash.py` | Bootloader flasher (`probe` / `flash`, `--model uv98` or `rt880`) |
 | `tools/backup_spi.py` | 4 MB SPI flash backup (stock firmware) |
 | `tools/extract_upgrade_tool.py` | Extracts the official firmware from iRadio's upgrade tool |
@@ -155,6 +158,6 @@ Not included: Radtel/iRadio firmware, vendor tools, decompiled stock code, datas
 
 The code in this repository is licensed under the GNU General Public License version 3 ([LICENSE](LICENSE)).
 
-Additional permission under GNU GPL version 3 section 7: if you modify this program, or any covered work, by linking or combining it with the Artery AT32F423 firmware library (`firmware/lib/at32f423`) or with bitmap glyphs generated from the DejaVu fonts (`firmware/src/font.h`), containing parts covered by the terms of their own licences, the licensors of this program grant you additional permission to convey the resulting work.
+Additional permission under GNU GPL version 3 section 7: if you modify this program, or any covered work, by linking or combining it with the Artery AT32F423 firmware library (`firmware/lib/at32f423`) or with bitmap glyphs generated from the DejaVu fonts (`firmware/src/font.h`, `firmware/src/fonts_aa.h`), containing parts covered by the terms of their own licences, the licensors of this program grant you additional permission to convey the resulting work.
 
 Third-party parts keep their own licences; see [ATTRIBUTION.md](ATTRIBUTION.md).
