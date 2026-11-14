@@ -6,14 +6,15 @@
 #include <stddef.h>
 #include "fonts_aa.h"
 
-#define FW_NAME  "UV98+ open test 22"
+#define FW_NAME  "UV98+ open test 27"
 #define APP_BASE 0x08002800u
 
 static void report_freq(void);
+static void squelch_setup(void);
 static void show_vfo2(void);
 static void chan_leave(void);
 static int chan_apply(int n);
-static int chan_next_scan(int n);
+static int chan_next_scan(int n, int dir);
 
 /* ---------------- timing ---------------- */
 static volatile uint32_t ticks;
@@ -769,7 +770,10 @@ static const char *const light_name[] = { "ALWAYS", "10 s", "20 s", "30 s", "60 
 static int light_idx = 0, lit = 1, locked, scanning, fdet_on, dw_on, dw_hop, dw_wait_clear, dw_saved_power;
 static uint32_t dw_next, dw_quiet_since, dw_freq;
 static uint32_t fdet_next, fdet_until;
-static uint32_t last_activity, scan_next, scan_hold_until;
+static uint32_t last_activity, scan_next, scan_hold_until, scan_poll_next;
+static int scan_hits, scan_found;     /* scan: consecutive open squelch reads on this step; 7 = a signal */
+static int scan_peaked;               /* band scan: the peak search has run for this signal */
+static int scan_dir = 1;              /* scan direction: 1 up, -1 down (up / down keys during a scan) */
 
 /* 1750 Hz tone burst: tone 1 frequency word, Hz * 10.3 (the stock tone formula, Hz / 10 * 0x67). */
 #define TONE_1750    (175u * 0x67u)
@@ -804,6 +808,7 @@ static void radio_mode(void)
     uint16_t r73 = bk_read(0, 0x73);
     bk1_write(0x73, mode == MODE_USB ? (r73 | 0x0010) : (r73 & ~0x0010u));
     bk1_write(0x47, 0x6040);
+    squelch_setup();
 }
 
 static void radio_rx_on(void)
@@ -838,6 +843,7 @@ static int radio_tune(uint32_t f)
     uint32_t v = f + cal_word(f, b->cal) - 0x8000u;
     bk1_write(0x38, (uint16_t)(v & 0xFFFF));
     bk1_write(0x39, (uint16_t)(v >> 16));
+    squelch_setup();                   /* thresholds before the receiver restart, as stock 0x8004BF0 */
     radio_rx_on();
     rx_tone();
     return 1;
@@ -906,10 +912,48 @@ static int rssi_dbm(void)
  * 0xAE/0xAF (FM) and 0xB0/0xB1 (AM): 0xB32F / 0xB32C; bits 9-4 are the volume. */
 static int volume = 0x32;
 static int audio_on;
-/* Squelch level 0-9 (0 = open). FM/NFM: BK4819 noise (0x65) opens below 70 - 5 * level and
- * closes 10 above (measured here: empty channel 78-83, carrier 13-15). AM: RSSI above the
- * empty-channel floor (about -80 on this radio) by 2 dB per level. */
+/* Squelch level 0-9 (0 = open). FM/NFM, as stock (0x8004BF0, 0x8004ECC, 0x8004F60, 0x80051E4): the
+ * radio chip's own squelch, 0x0C bit 1, with its thresholds from the calibration block of the current
+ * band (one entry per 5 MHz: +0x30 / +0x40 noise / RSSI wide, +0x50 / +0x60 narrow) plus a per-level
+ * offset (stock tables at 0x08026370 and 0x0802637B): 0x4F noise close << 8 | open, 0x78 RSSI
+ * open << 8 | close; glitch 0x4D / 0x4E from stock settings 0xB2 (table at 0x08026365). So a channel
+ * opens only when the signal rises, not when a strong signal next to it turns the gain down (test 22:
+ * 1 W on 145.500 opened 145.450, whose RSSI fell from -77 to -100 dBm and noise from 80 to 53-70).
+ * Without calibration: noise (0x65) below 70 - 5 * level, closing 10 above. AM / USB: RSSI above
+ * the empty-channel floor (about -80 on this radio) by 2 dB per level. */
 static int sq_level = 3;
+static const uint8_t sq_glitch_tab[11] = { 20, 30, 40, 50, 60, 70, 100, 120, 160, 200, 255 };
+static const uint8_t sq_noise_tab[11] = { 10, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1 };
+static const uint8_t sq_rssi_tab[11] = { 0, 0, 2, 4, 6, 10, 16, 22, 28, 34, 38 };
+static uint8_t sq_glitch_idx = 4;      /* stock settings 0xB2, read at start-up */
+static int sq_hw;                      /* 1: chip thresholds set from calibration, use 0x0C bit 1 */
+
+static void squelch_setup(void)
+{
+    int ci = cal_index(freq10);
+    if (ci < 0) { sq_hw = 0; return; }
+    const uint8_t *b = cal_blk[cal_map[ci].blk];
+    uint32_t idx = (freq10 - cal_map[ci].base) / 500000u;
+    if (idx > 15) idx = 15;
+    int narrow = mode == MODE_NFM || mode == MODE_USB;
+    int nb = b[(narrow ? 0x50 : 0x30) + idx], rb = b[(narrow ? 0x60 : 0x40) + idx];
+    int lv = sq_level < 0 ? 0 : sq_level > 10 ? 10 : sq_level;
+    int g = sq_glitch_tab[sq_glitch_idx % 11];
+    bk1_write(0x4D, (uint16_t)(0xA000 + g));
+    bk1_write(0x4E, (uint16_t)(0x6F00 + g));
+    bk1_write(0x4F, (uint16_t)(((nb + 2 + sq_noise_tab[lv]) & 0xFF) << 8 | ((nb - 4 + sq_noise_tab[lv]) & 0xFF)));
+    bk1_write(0x78, (uint16_t)(((rb + 2 + sq_rssi_tab[lv]) & 0xFF) << 8 | ((rb - 4 + sq_rssi_tab[lv]) & 0xFF)));
+    sq_hw = 1;
+}
+
+/* Carrier now, without hysteresis (used by the scan): the chip's squelch (FM / NFM with calibration),
+ * noise below the open level (FM / NFM without), RSSI above the open level (AM / USB). */
+static int sq_carrier(void)
+{
+    if (mode == MODE_AM || mode == MODE_USB) return rssi_dbm() >= -80 + 2 * sq_level;
+    if (sq_hw) return (bk_read(0, 0x0C) >> 1) & 1;
+    return (bk_read(0, 0x65) & 0x7F) <= 70 - 5 * sq_level;
+}
 
 static uint16_t rx_gain(void)
 {
@@ -1657,13 +1701,18 @@ static void wake(void)
 }
 
 /* VFO mode: scan the current receive band by the menu step. Channel mode: scan the used channels,
- * skipping those marked "scan remove" (CHIRP), each with its own receive tone. Stop on a signal, carry
- * on 3 s after it goes. scanning: 1 = band, 2 = channels. */
+ * skipping those marked "scan remove" (CHIRP), each with its own receive tone. As stock (0x800CB28,
+ * squelch task 0x8007B1C, CO resume 0x800FE06): 200 ms per step; the squelch read every 2 ms, and a
+ * signal only after 7 open reads in a row with no closed read between; carry on 2 s after it goes.
+ * scanning: 1 = band, 2 = channels. */
 static void scan_start(void)
 {
+    audio_close();                     /* a squelch already open must not count as a signal found */
+    scan_dir = 1;
     if (chan_mode) {
-        if (chan_next_scan(chan_num) < 0) { show_status("NO CHANNELS TO SCAN", C_YELLOW); return; }
+        if (chan_next_scan(chan_num, 1) < 0) { show_status("NO CHANNELS TO SCAN", C_YELLOW); return; }
         scanning = 2;
+        scan_hits = scan_found = scan_peaked = 0;
         scan_next = ticks;
         scan_hold_until = ticks;
         show_status("SCANNING CHANNELS", C_GREEN);
@@ -1671,6 +1720,7 @@ static void scan_start(void)
     }
     if (rxband_of(freq10) < 0) { show_status("SCAN: NOT IN A BAND", C_YELLOW); return; }
     scanning = 1;
+    scan_hits = scan_found = scan_peaked = 0;
     scan_next = ticks;
     scan_hold_until = ticks;
     show_status("SCANNING", C_GREEN);
@@ -1683,17 +1733,69 @@ static void scan_stop(void)
     show_status("RX", C_GREEN);
 }
 
+/* RSSI at f once it has settled: after a retune 0x67 reads about -145 dBm for a few ms, so wait until it
+ * is above -130 dBm and has stopped rising, at most 30 ms. */
+static int rssi_at(uint32_t f)
+{
+    radio_tune(f);
+    int ms = 0, last = -100;
+    for (;;) {
+        int r = bk_read(0, 0x67) & 0x1FF;
+        if ((r >= 60 && r <= last + 4) || ms >= 30) break;
+        last = r;
+        delay_ms(1);
+        ms++;
+    }
+    return rssi_dbm();
+}
+
+/* Band scan found a signal at freq10. A strong signal close by opens the squelch on neighbouring steps
+ * too (tests 22-24: 1 W a metre away on 145.500 stopped the scan on 145.4125-145.4625, where its RSSI
+ * fell to about -100 dBm while 145.500 read about -50), so look at the steps up to 100 kHz either side
+ * (at most 8) and settle on the one with the strongest RSSI. */
+static void scan_peak(void)
+{
+    int b = rxband_of(freq10);
+    int32_t st = (int32_t)step_list[step_idx], f0 = (int32_t)freq10, best = f0;
+    int n = (int)(10000 / st), best_r = -1000;
+    if (n > 8) n = 8;
+    if (n < 1) n = 1;
+    audio_close();
+    for (int i = -n; i <= n; i++) {
+        wdt_counter_reload();
+        int32_t f = f0 + i * st;
+        if (b >= 0 && ((uint32_t)f < rxbands[b].lo || (uint32_t)f > rxbands[b].hi)) continue;
+        int r = rssi_at((uint32_t)f);
+        if (r > best_r) { best_r = r; best = f; }
+    }
+    radio_tune((uint32_t)best);
+    show_freq();
+}
+
 static void scan_step(void)
 {
+    if ((int32_t)(ticks - scan_poll_next) >= 0) {
+        scan_poll_next = ticks + 2;
+        if (!sq_carrier()) scan_hits = 0;
+        else if (scan_hits < 7 && ++scan_hits == 7) scan_found = 1;
+    }
+    if (scanning == 1 && scan_found && !scan_peaked && !audio_on) {
+        scan_peak();                   /* then the squelch must confirm again on the peak */
+        scan_peaked = 1;
+        scan_hits = scan_found = 0;
+        scan_next = ticks + 200;
+        return;
+    }
     if (audio_on) {
         if ((int32_t)(ticks - scan_hold_until) >= 0) { uart_puts("SCAN STOPPED ON SIGNAL\r\n"); report_freq(); }
-        scan_hold_until = ticks + 3000;
+        scan_hold_until = ticks + 2000;
         return;
     }
     if ((int32_t)(ticks - scan_hold_until) < 0 || (int32_t)(ticks - scan_next) < 0) return;
     if (scanning == 2) {
-        int n = chan_mode ? chan_next_scan(chan_num) : -1;
+        int n = chan_mode ? chan_next_scan(chan_num, scan_dir) : -1;
         if (n < 0 || !chan_apply(n)) { scan_stop(); return; }
+        scan_hits = scan_found = scan_peaked = 0;
         show_freq();
         if (status_text[0] != 'S') show_status("SCANNING CHANNELS", C_GREEN);
         scan_next = ticks + (rx_tone_type != TONE_OFF ? 400 : 200);   /* time for the tone decoder */
@@ -1701,12 +1803,14 @@ static void scan_step(void)
     }
     int b = rxband_of(freq10);
     if (b < 0) { scan_stop(); return; }
-    uint32_t f = freq10 + step_list[step_idx];
-    if (f > rxbands[b].hi) f = rxbands[b].lo;
-    radio_tune(f);
+    int32_t f = (int32_t)freq10 + scan_dir * (int32_t)step_list[step_idx];
+    if (f > (int32_t)rxbands[b].hi) f = (int32_t)rxbands[b].lo;
+    if (f < (int32_t)rxbands[b].lo) f = (int32_t)rxbands[b].hi;
+    radio_tune((uint32_t)f);
+    scan_hits = scan_found = scan_peaked = 0;
     show_freq();
     if (status_text[0] != 'S') show_status("SCANNING", C_GREEN);
-    scan_next = ticks + 150;
+    scan_next = ticks + 200;
 }
 
 static void report_freq(void);
@@ -1913,12 +2017,13 @@ static int chan_apply(int n)
     return 1;
 }
 
-/* Next used channel after n (wraps) that is not marked "scan remove" (+19 bit 7, CHIRP); -1 if none. */
-static int chan_next_scan(int n)
+/* Next used channel after n in direction dir (1 up, -1 down; wraps) that is not marked "scan remove"
+ * (+19 bit 7, CHIRP); -1 if none. */
+static int chan_next_scan(int n, int dir)
 {
     uint8_t c[CH_SIZE];
     for (int i = 1; i <= CH_COUNT; i++) {
-        int m = (n + i) % CH_COUNT;
+        int m = ((n + dir * i) % CH_COUNT + CH_COUNT) % CH_COUNT;
         if (chan_read(m, c) && !(c[19] & 0x80)) return m;
     }
     return -1;
@@ -2330,7 +2435,7 @@ static void menu_change(int item, int dir)
     case MI_TXTONE: i = (tone_index(tone_type, tone_val) + dir + NTONES) % NTONES; tone_from_index(i, &tone_type, &tone_val); break;
     case MI_RXTONE: i = (tone_index(rx_tone_type, rx_tone_val) + dir + NTONES) % NTONES;
                     tone_from_index(i, &rx_tone_type, &rx_tone_val); if (!tx_on) rx_tone(); break;
-    case MI_SQ: sq_level = clampi(sq_level + dir, 0, 9); break;
+    case MI_SQ: sq_level = clampi(sq_level + dir, 0, 9); squelch_setup(); break;
     case MI_STEP: step_idx = clampi(step_idx + dir, 0, (int)(sizeof step_list / sizeof step_list[0]) - 1); break;
     case MI_MODE: mode = (mode + dir + NMODES) % NMODES; audio_close(); radio_mode(); break;
     case MI_TOT: tot_idx = clampi(tot_idx + dir, 0, (int)(sizeof tot_list / sizeof tot_list[0]) - 1); break;
@@ -2384,6 +2489,7 @@ static void menu_restore(void)
     if (mode != menu_old.mode) { mode = menu_old.mode; audio_close(); radio_mode(); }
     if (bl_idx != menu_old.bl) { bl_idx = menu_old.bl; backlight(bl_list[bl_idx]); }
     if (!tx_on) rx_tone();
+    squelch_setup();
 }
 
 #define MENU_ROWS  5
@@ -2621,6 +2727,7 @@ static void command(char *cmd)
         int v;
         if (!parse_int(cmd + 3, &v) || v < 0 || v > 9) { uart_puts("ERR SQ 0-9\r\n"); return; }
         sq_level = v;
+        squelch_setup();
         show_info();
         uart_puts("SQ "); put_dec(sq_level); uart_puts("\r\n");
     } else if (cmd[0] == 'V' && cmd[1] == 'O' && cmd[2] == 'L' && cmd[3] == ' ') {
@@ -2770,8 +2877,10 @@ static void command(char *cmd)
         uart_puts(dw_on ? "DW ON" : "DW OFF");
         if (dw_on) { uart_puts(", WATCHING "); char f[16]; fmt_freq(f, dw_freq); uart_puts(f); uart_puts(dw_hop ? ", SWITCHED" : ""); }
         uart_puts("\r\n");
-    } else if (!__builtin_strcmp(cmd, "SCAN ON") || !__builtin_strcmp(cmd, "SCAN OFF")) {
-        if (cmd[6] == 'N') scan_start(); else scan_stop();
+    } else if (!__builtin_strcmp(cmd, "SCAN ON") || !__builtin_strcmp(cmd, "SCAN OFF") || !__builtin_strcmp(cmd, "SCAN DOWN")) {
+        if (cmd[6] == 'N') scan_start();
+        else if (cmd[5] == 'D') { scan_start(); scan_dir = -1; }
+        else scan_stop();
         uart_puts(scanning ? "SCAN ON\r\n" : "SCAN OFF\r\n");
     } else if (!__builtin_strcmp(cmd, "FDET")) {
         fdet_start();
@@ -2825,7 +2934,7 @@ static void command(char *cmd)
         uart_puts("CLK "); put_dec((int32_t)(system_core_clock / 1000000u));
         uart_puts(" MHZ, BOOTLOADER LEFT "); put_dec((int32_t)(boot_clock / 1000000u)); uart_puts(" MHZ\r\n");
     } else if (!__builtin_strcmp(cmd, "HELP")) {
-        uart_puts("PING, VER, F [MHz], M FM|NFM|AM|USB, RSSI, SQ 0-9, VOL 0-63, MIC [0-31], POW [LOW|MID|HIGH], T [OFF|67.0|D023N|D023I], RT [same, receive], SHIFT [OFF|+|-], OFFSET [MHz], VFO [A|B], PTT ON|OFF (repeat ON within 2 s), DW [ON|OFF], SCAN ON|OFF, FDET, CH [n], CHLIST [n], VFOMODE, SAVE, SETTINGS, CAL, SPIID, SPIRD, AGC, ADC, R1 xx, R2 xx. TX: PTT1 voice, alarm button 1750 Hz; amateur bands, CB, marine and PMR446 only.\r\n");
+        uart_puts("PING, VER, F [MHz], M FM|NFM|AM|USB, RSSI, SQ 0-9, VOL 0-63, MIC [0-31], POW [LOW|MID|HIGH], T [OFF|67.0|D023N|D023I], RT [same, receive], SHIFT [OFF|+|-], OFFSET [MHz], VFO [A|B], PTT ON|OFF (repeat ON within 2 s), DW [ON|OFF], SCAN ON|DOWN|OFF, FDET, CH [n], CHLIST [n], VFOMODE, SAVE, SETTINGS, CAL, SPIID, SPIRD, AGC, ADC, R1 xx, R2 xx. TX: PTT1 voice, alarm button 1750 Hz; amateur bands, CB, marine and PMR446 only.\r\n");
     } else {
         uart_puts("ERR unknown command, try HELP\r\n");
     }
@@ -2899,6 +3008,7 @@ int main(void)
 
     flash_init();
     cal_load();
+    { uint8_t v; flash_read(0x2000u + 0xB2u, &v, 1); if (v < 11) sq_glitch_idx = v; }   /* stock settings 0xB2 */
     set_load();
     radio_init();
     vfo_power = power;
@@ -2991,13 +3101,25 @@ int main(void)
             if (pressed) {
                 int was_dark = !lit;
                 wake();
-                if (scanning) { scan_stop(); pressed = 0; }
+                if (scanning) {
+                    const uint16_t updown = (1u << 1) | (1u << 2);
+                    if (!(pressed & (uint16_t)~updown)) {   /* up / down during a scan: its direction, carry on */
+                        scan_dir = (pressed & (1u << 1)) ? 1 : -1;
+                        audio_close();
+                        scan_hits = scan_found = scan_peaked = 0;
+                        scan_hold_until = ticks;
+                        scan_next = ticks;
+                    } else {
+                        scan_stop();
+                    }
+                    pressed = 0;
+                }
                 if (fdet_on) { fdet_stop(); show_status("RX", C_GREEN); pressed = 0; }
                 if (dw_hop) { dw_hop_end(); show_status("RX", C_GREEN); }
                 if (was_dark) pressed = 0;                     /* the first press only wakes the screen */
             }
             const uint16_t rep_keys = (1u << 1) | (1u << 2);   /* up, down repeat when held */
-            if (m & rep_keys) {
+            if ((m & rep_keys) && !scanning) {
                 if (!(last_m & m & rep_keys)) rep_at = ticks + 450;
                 else if ((int32_t)(ticks - rep_at) >= 0) { pressed |= m & rep_keys; rep_at = ticks + 90; }
             }
@@ -3102,6 +3224,7 @@ int main(void)
             int open_rssi = -80 + 2 * sq_level;
             int carrier = mode == MODE_AM || mode == MODE_USB
                 ? last_rssi >= (audio_on ? open_rssi - 3 : open_rssi)
+                : sq_hw ? (bk_read(0, 0x0C) >> 1) & 1                  /* the chip's squelch, as stock */
                 : last_noise <= (audio_on ? open_noise + 10 : open_noise);
             int tone_ok = 1;
             if (rx_tone_type != TONE_OFF && (mode == MODE_FM || mode == MODE_NFM)) {
@@ -3112,6 +3235,7 @@ int main(void)
                         : (r0c >> 15) & 1;
             }
             int want = sq_level == 0 || monitor || (carrier && tone_ok);
+            if (scanning && !scan_found && !monitor && sq_level) want = 0;   /* scan: only after 7 open reads in a row */
             if (want && !audio_on) {
                 close_count = 0;
                 if (++open_count >= 2) {

@@ -4,11 +4,11 @@ I got sick of people selling simple knowledge or "personalised" firmware.  open 
 
 Open firmware for the iRadio UV-98 Plus handheld (Radtel RT-880G family, FCC ID 2AZSA-6D880), written from scratch, plus the tools to flash it and control the radio from a computer over the programming cable, and a satellite tracker that tunes the radio to downlinks.
 
-**Status: experimental (test 22), run on one UV-98 Plus only.** The firmware reads the radio's own calibration (frequency correction, deviation, power levels) from its SPI flash, with our radio's values built into `firmware/src/main.c` as a fallback.
+**Status: experimental (test 27), run on one UV-98 Plus only.** The firmware reads the radio's own calibration (frequency correction, deviation, power levels) from its SPI flash, with our radio's values built into `firmware/src/main.c` as a fallback.
 
 ## Features
 
-Each feature says whether it has been tested on the radio, and with which test build. "Not tested yet" means no test on the radio has been recorded. Test 22 is on our radio now.
+Each feature says whether it has been tested on the radio, and with which test build. "Not tested yet" means no test on the radio has been recorded. Test 27 is on our radio now.
 
 ### Receiving
 
@@ -16,8 +16,8 @@ Each feature says whether it has been tested on the radio, and with which test b
   *Tested at 446 MHz with a UV-5R: FM and NFM (tests 6-7), USB (test 11). Not tested yet: AM, and the other bands.*
 - **Band presets:** 10 m, 6 m, AIR, 2 m, MARINE, 220, 70 cm and 23 cm. Each sets its usual mode, step and repeater offset (Region 2), turns the shift off, and comes back to the last frequency you used in that band. Menu RX/TX, Band.
   *Not tested yet.*
-- **Noise squelch:** silences the speaker until a signal opens it. Levels 0 (always open) to 9, default 3. Menu RX/TX, Squelch, or `SQ 0-9`. Hold PTT2 or the monitor side key to open it by hand.
-  *Tested (test 7).*
+- **Squelch:** silences the speaker until a signal opens it. Levels 0 (always open) to 9, default 3. Menu RX/TX, Squelch, or `SQ 0-9`. Hold PTT2 or the monitor side key to open it by hand. In FM and NFM it works as stock does (since test 23): the radio chip's own squelch, with signal, noise and glitch thresholds from the radio's calibration for the band, so a channel opens only when a signal rises on it. AM and USB open on signal strength.
+  *Tested: noise squelch (test 7); the stock-style squelch kept a neighbouring channel shut at a realistic signal level (tests 23-26).*
 - **Receive tone squelch (CTCSS and DCS):** the speaker opens only for a signal carrying the tone you set: CTCSS, DCS normal or DCS inverted. Menu RX/TX, RX tone; in a tone item, `#` jumps to the next tone type. Over the cable: `RT 88.5`, `RT D023N`, `RT D023I`, `RT OFF`.
   *Tested (test 11).*
 - **Signal meter:** a CB-style S-meter at the bottom of the screen. Over the cable: `RSSI`.
@@ -28,12 +28,12 @@ Each feature says whether it has been tested on the radio, and with which test b
   *Not tested yet on a real SSB signal.*
 - **Dual watch:** the radio's second receiver chip listens on the other VFO, shown on the small line under the main frequency. When it hears a signal while the main receiver is quiet, the main receiver listens there too and the line turns green; the top of the screen and transmit stay on the main VFO or channel. It comes back 2 seconds after the signal ends, or at once on any key, PTT or a serial command that changes something. On at start-up, also in channel mode. Menu Settings, Dual watch, or `DW ON` / `DW OFF`.
   *Partly tested: it starts and watches the other VFO (test 18, over the cable). Not tested yet with a signal on the other VFO.*
-- **Band scan:** in VFO mode, steps through the current band preset by the menu step. It stops on a signal and carries on 3 seconds after the signal goes. Menu Scan, Scan, or `SCAN ON`. Any key or PTT stops it.
-  *Not tested yet.*
-- **Channel scan:** in channel mode, Scan steps through the used channels instead, skipping channels marked "scan remove" in CHIRP, each with its own receive tone. It stops on a signal and carries on 3 seconds after the signal goes. Menu Scan, Scan, or `SCAN ON`. Any key or PTT stops it.
-  *Not tested yet (new in test 20).*
+- **Band scan:** in VFO mode, steps through the current band preset by the menu step, 200 ms per step as stock. A signal counts after 7 open squelch readings in a row; the scan then checks the steps up to 100 kHz either side and settles on the strongest, so a strong transmitter close by doesn't stop it on a neighbouring step. It carries on 2 seconds after the signal goes. Up and down during a scan set its direction; any other key or PTT stops it. Menu Scan, Scan, or `SCAN ON` (up) / `SCAN DOWN`.
+  *Tested: starts and stops (test 21); stopped on 145.500 for a UV-5R at 1 W, scanning up from 145.400 and 145.450 (tests 26-27) and down from 145.550 (test 27).*
+- **Channel scan:** in channel mode, Scan steps through the used channels instead, skipping channels marked "scan remove" in CHIRP, each with its own receive tone. It stops on a signal (7 open squelch readings in a row) and carries on 2 seconds after the signal goes. Up and down during a scan set its direction; any other key or PTT stops it. Menu Scan, Scan, or `SCAN ON` / `SCAN DOWN`.
+  *Partly tested: starts, steps and stops over the cable (test 21). Not tested yet: stopping on a signal.*
 - **Frequency detect:** finds the frequency of a nearby transmitter. Start it, then key the other radio close by. The radio tunes to what it finds, to the nearest 1 kHz, or shows NOTHING FOUND after 20 seconds. Menu Scan, Freq detect, or `FDET`. Any key stops it.
-  *Not tested yet.*
+  *Known problem: it reports a frequency within a second of starting, with nothing transmitting (143.605 and 256.274 MHz in tests 21-23).*
 
 ### Transmitting
 
@@ -180,7 +180,7 @@ Switch the radio on normally, then off **without pressing PTT** (see [Known prob
 
 ```sh
 .venv/bin/python tools/flash.py probe --model uv98                 # optional: connect only, erases nothing
-.venv/bin/python tools/flash.py flash --model uv98 --image bin/uv98plus_openfw_test22.bin --yes
+.venv/bin/python tools/flash.py flash --model uv98 --image bin/uv98plus_openfw_test27.bin --yes
 ```
 
 It takes about 30 seconds: 246 blocks of 1 KB, each acknowledged. When it prints `final reply 6`, switch the radio off and on normally. To go back to stock, flash `uv98plus_V1.16_250915.bin` the same way.
@@ -196,7 +196,7 @@ The flasher checks the image before sending it and writes only the application a
 | # held 1.5 s | Reverse: listen on the repeater input (or on a split channel's transmit frequency); hold again to swap back |
 | * | Swap VFO A and VFO B (each keeps its frequency, mode, step, shift, offset and tones). The main VFO is at the top; the other is on the small line under the main frequency, receive only. In channel mode it goes back to VFO mode first |
 | * held 1.5 s (lock symbol) | Lock or unlock the keys (PTT still works) |
-| Up / down | Tune by the step set in the menu (12.5 kHz by default); held, it repeats. In channel mode: next / previous used channel |
+| Up / down | Tune by the step set in the menu (12.5 kHz by default); held, it repeats. In channel mode: next / previous used channel. During a scan: scan up / down |
 | Green bar | Open the menu |
 | Red bar | Clear a half-typed frequency or channel number |
 | PTT2 or monitor (side keys) | Open the squelch while held |
@@ -232,7 +232,7 @@ The groups and their items:
 | `SHIFT [OFF\|+\|-]`, `OFFSET [MHz]` | Repeater shift and offset |
 | `VFO [A\|B]` | Show or select the VFO |
 | `PTT ON`, `PTT OFF`, `PTT` | Transmit from the computer. `PTT ON` must be repeated at least every 2 seconds or transmit stops (`PTT TIMEOUT`); band limits, power and the time-out timer apply |
-| `DW [ON\|OFF]`, `SCAN ON\|OFF`, `FDET` | Dual watch, scan (band in VFO mode, channels in channel mode), frequency detect |
+| `DW [ON\|OFF]`, `SCAN ON\|DOWN\|OFF`, `FDET` | Dual watch, scan up or down (band in VFO mode, channels in channel mode), frequency detect |
 | `CH [n]`, `CHLIST [n]`, `VFOMODE` | Show or go to channel n; list the next 10 used channels from n; back to VFO mode |
 | `SAVE`, `SETTINGS` | Save settings now; show whether settings were loaded at start-up |
 | `CAL`, `SPIID`, `SPIRD addr [len]`, `AGC [ON\|OFF]`, `W1 reg value` | Calibration source, flash chip ID, read flash (hex), USB/AM AGC, write a radio-chip register (transmit registers refused) |
