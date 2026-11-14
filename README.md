@@ -1,4 +1,4 @@
-# iRadio UV-98 Plus open firmware
+# iRadio UV-98 Plus open firmware AkA Radtel RT-880G
 
 I got sick of people selling simple knowledge or "personalised" firmware.  open it up and share dont be greedy.
 
