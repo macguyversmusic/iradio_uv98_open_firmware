@@ -81,6 +81,10 @@ footer ul { padding-left: 1.2em; }
       <button type="button" id="unfollow" hidden>Stop following</button>
     </div>
     <label><input type="checkbox" id="follow" checked style="width:auto;min-height:0"> Follow Doppler during the pass (Tune buttons)</label>
+    <div class="row" role="group" aria-label="Automatic stepping">
+      <label><input type="checkbox" id="auto" style="width:auto;min-height:0"> Auto: step through the downlinks of the satellites in view</label>
+      <label>every <select id="dwell"><option value="20">20 s</option><option value="30" selected>30 s</option><option value="60">60 s</option><option value="120">2 min</option></select></label>
+    </div>
     <p id="follow-status" class="meta"></p>
     <form id="manual" class="row" style="margin-top:10px">
       <label>Frequency in MHz <input id="mf" inputmode="decimal" autocomplete="off" required></label>
@@ -158,6 +162,7 @@ async function pollRadio() {
 }
 
 function showFollow(f) {
+  if (f && 'auto' in f && document.activeElement !== $('#auto')) $('#auto').checked = f.auto;
   const on = f && f.label;
   $('#unfollow').hidden = !on;
   $('#follow-status').textContent = on
@@ -189,6 +194,12 @@ document.querySelectorAll('[data-step]').forEach(b => b.addEventListener('click'
 document.querySelectorAll('[data-vol]').forEach(b => b.addEventListener('click', () =>
   run(b, '/api/radio', { volume_delta: +b.dataset.vol }, r => `${b.textContent}: ${statusText(r.status)}`)));
 $('#connect').addEventListener('click', e => run(e.target, '/api/connect', {}, r => 'Radio connected.'));
+function setAuto() {
+  run($('#auto'), '/api/auto', { on: $('#auto').checked, dwell: +$('#dwell').value },
+      r => { showFollow(r.follow); return $('#auto').checked ? `Auto on, ${$('#dwell').value} s per downlink.` : 'Auto off.'; });
+}
+$('#auto').addEventListener('change', setAuto);
+$('#dwell').addEventListener('change', () => { if ($('#auto').checked) setAuto(); });
 $('#unfollow').addEventListener('click', e => run(e.target, '/api/follow', { stop: true }, r => { showFollow(r.follow); return 'Stopped following.'; }));
 $('#manual').addEventListener('submit', e => {
   e.preventDefault();

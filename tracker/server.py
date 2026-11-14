@@ -60,6 +60,8 @@ radio_lock = threading.Lock()
 # Doppler follow: the satellite downlink being tracked, retuned as the shift changes.
 follow = {"on": None, "ended": None}
 follow_lock = threading.Lock()
+# Auto: step through the downlinks of the satellites in view, highest first, dwell seconds each.
+auto = {"on": False, "dwell": 30, "index": 0, "until": 0.0}
 
 
 def parse_tle_text(text):
@@ -384,11 +386,59 @@ def follower():
                     follow["on"]["error"] = str(e)
 
 
+def auto_targets():
+    """(sat_id, freq_hz, mode, label) for every tunable downlink of the satellites in view, highest first."""
+    now = ts.now()
+    up = []
+    for sid, s in list(sats.items()):
+        el = look(s["sat"], now)[0]
+        if el > 0:
+            up.append((el, sid, s))
+    out = []
+    for el, sid, s in sorted(up, key=lambda x: x[0], reverse=True):
+        for x in s["transmitters"]:
+            if x["rig"]:
+                out.append((sid, x["rig"]["freq_hz"], x["rig"]["mode"],
+                            f"{s['display']} {x.get('description') or x.get('mode') or ''}".strip()))
+    return out
+
+
+def auto_stepper():
+    """While Auto is on, move to the next downlink every dwell seconds (Doppler follow does the rest)."""
+    while True:
+        time.sleep(1)
+        if not auto["on"] or time.time() < auto["until"]:
+            continue
+        targets = auto_targets()
+        if not targets:
+            with follow_lock:
+                follow["on"], follow["ended"] = None, "Auto: no satellite with a tunable downlink in view"
+            auto["until"] = time.time() + 10
+            continue
+        auto["index"] %= len(targets)
+        sid, f, mode, label = targets[auto["index"]]
+        auto["index"] += 1
+        try:
+            tuned, shift = doppler(sid, f)
+            get_radio(connect=True).tune(tuned, mode)
+            with follow_lock:
+                follow["ended"] = None
+                follow["on"] = {"sat_id": sid, "freq_hz": f, "mode": mode, "trim": 0, "last_hz": tuned,
+                                "doppler_hz": shift, "label": f"Auto: {label}"}
+        except Exception as e:
+            with follow_lock:
+                follow["ended"] = f"Auto: {e}"
+        auto["until"] = time.time() + auto["dwell"]
+
+
 def follow_info():
     with follow_lock:
         on = follow["on"]
-        return {"label": on["label"], "doppler_hz": on["doppler_hz"], "trim_hz": on["trim"],
+        info = {"label": on["label"], "doppler_hz": on["doppler_hz"], "trim_hz": on["trim"],
                 "error": on.get("error")} if on else {"ended": follow["ended"]}
+    info["auto"] = auto["on"]
+    info["dwell"] = auto["dwell"]
+    return info
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -440,6 +490,7 @@ class Handler(BaseHTTPRequestHandler):
                 if req.get("doppler", True) and req.get("sat_id"):
                     freq, shift = doppler(req["sat_id"], freq)
                 s = dev.tune(freq, req["mode"])
+                auto["on"] = False
                 with follow_lock:
                     follow["ended"] = None
                     follow["on"] = {"sat_id": req["sat_id"], "freq_hz": int(req["freq_hz"]), "mode": req["mode"],
@@ -448,7 +499,16 @@ class Handler(BaseHTTPRequestHandler):
                         if req.get("follow") and req.get("sat_id") else None
                 self.send_json({"ok": True, "status": s, "requested_hz": int(req["freq_hz"]),
                                 "tuned_hz": freq, "doppler_hz": shift, "follow": follow_info()})
+            elif self.path == "/api/auto":
+                auto["on"] = bool(req.get("on"))
+                auto["dwell"] = max(10, min(300, int(req.get("dwell", auto["dwell"]))))
+                auto["index"], auto["until"] = 0, 0.0
+                if not auto["on"]:
+                    with follow_lock:
+                        follow["on"], follow["ended"] = None, None
+                self.send_json({"ok": True, "follow": follow_info()})
             elif self.path == "/api/follow":
+                auto["on"] = False
                 with follow_lock:
                     follow["on"], follow["ended"] = None, None
                 self.send_json({"ok": True, "follow": follow_info()})
@@ -483,5 +543,6 @@ if __name__ == "__main__":
     threading.Thread(target=refresher, daemon=True).start()
     threading.Thread(target=connect_at_start, daemon=True).start()
     threading.Thread(target=follower, daemon=True).start()
+    threading.Thread(target=auto_stepper, daemon=True).start()
     print(f"Satellite tracker on http://localhost:{PORT}  ({SITE_NAME})", flush=True)
     ThreadingHTTPServer((HOST, PORT), Handler).serve_forever()
