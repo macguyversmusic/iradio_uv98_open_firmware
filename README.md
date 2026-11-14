@@ -15,7 +15,7 @@ Each feature says whether it has been tested on the radio, and with which test b
 - **Receive 18-660 MHz and 840-1300 MHz in FM, NFM, AM and USB.** Type the frequency in kHz and press `#` (for example `145500#`); the red bar clears a half-typed frequency. Up/down step by the menu step and repeat when held. Change the mode in menu RX/TX, Mode. Over the cable: `F 145.5`, `M USB`.
   *Tested at 446 MHz with a UV-5R: FM and NFM (tests 6-7), USB (test 11). Not tested yet: AM, and the other bands.*
 - **Band presets:** 10 m, 6 m, AIR, 2 m, MARINE, 220, 70 cm and 23 cm. Each sets its usual mode, step and repeater offset (Region 2), turns the shift off, and comes back to the last frequency you used in that band. Menu RX/TX, Band.
-  *Not tested yet.*
+  *Tested (test 28): from the menu, 70 cm to 23 cm (1297.500 NFM, shift off, offset 12 MHz).*
 - **Squelch:** silences the speaker until a signal opens it. Levels 0 (always open) to 9, default 3. Menu RX/TX, Squelch, or `SQ 0-9`. Hold PTT2 or the monitor side key to open it by hand. In FM and NFM it works as stock does (since test 23): the radio chip's own squelch, with signal, noise and glitch thresholds from the radio's calibration for the band, so a channel opens only when a signal rises on it. AM and USB open on signal strength.
   *Tested: noise squelch (test 7); the stock-style squelch kept a neighbouring channel shut at a realistic signal level (tests 23-26).*
 - **Receive tone squelch (CTCSS and DCS):** the speaker opens only for a signal carrying the tone you set: CTCSS, DCS normal or DCS inverted. Menu RX/TX, RX tone; in a tone item, `#` jumps to the next tone type. Over the cable: `RT 88.5`, `RT D023N`, `RT D023I`, `RT OFF`.
@@ -27,7 +27,7 @@ Each feature says whether it has been tested on the radio, and with which test b
 - **Automatic gain control for USB and AM:** turns the receiver gain down on strong signals and back up when they go. On by default. Menu Audio, AGC, or `AGC ON` / `AGC OFF`.
   *Not tested yet on a real SSB signal.*
 - **Dual watch:** the radio's second receiver chip listens on the other VFO, shown on the small line under the main frequency. When it hears a signal while the main receiver is quiet, the main receiver listens there too and the line turns green; the top of the screen and transmit stay on the main VFO or channel. It comes back 2 seconds after the signal ends, or at once on any key, PTT or a serial command that changes something. On at start-up, also in channel mode. Menu Settings, Dual watch, or `DW ON` / `DW OFF`.
-  *Partly tested: it starts and watches the other VFO (test 18, over the cable). Not tested yet with a signal on the other VFO.*
+  *Tested (tests 22-23): on 2 m it switches to a UV-5R signal and comes back 2 s after it ends; transmit stays on the main frequency. Known problem: the second receiver hears nothing on 70 cm (see [Known problems](#known-problems)).*
 - **Band scan:** in VFO mode, steps through the current band preset by the menu step, 200 ms per step as stock. A signal counts after 7 open squelch readings in a row; the scan then checks the steps up to 100 kHz either side and settles on the strongest, so a strong transmitter close by doesn't stop it on a neighbouring step. It carries on 2 seconds after the signal goes. Up and down during a scan set its direction; any other key or PTT stops it. Menu Scan, Scan, or `SCAN ON` (up) / `SCAN DOWN`.
   *Tested: starts and stops (test 21); stopped on 145.500 for a UV-5R at 1 W, scanning up from 145.400 and 145.450 (tests 26-27) and down from 145.550 (test 27).*
 - **Channel scan:** in channel mode, Scan steps through the used channels instead, skipping channels marked "scan remove" in CHIRP, each with its own receive tone. It stops on a signal (7 open squelch readings in a row), then checks your channels within 100 kHz of that one and settles on the strongest, so a strong transmitter close by doesn't stop it on a neighbouring channel. It carries on 2 seconds after the signal goes. Up and down during a scan set its direction; any other key or PTT stops it. Menu Scan, Scan, or `SCAN ON` / `SCAN DOWN`.
@@ -52,22 +52,22 @@ Each feature says whether it has been tested on the radio, and with which test b
 - **1750 Hz tone burst:** hold the alarm button on top of the radio. Pressed while PTT1 is held, it replaces your voice until you let go.
   *Tested (tests 10-11).*
 - **Repeater shift and offset:** menu RX/TX, Shift (off, + or -) and Offset (100 kHz, 500 kHz, 600 kHz, 1, 1.6, 5, 6, 7.6 or 12 MHz), or `SHIFT -` and `OFFSET 0.6`.
-  *Partly tested: the transmit frequency was checked over the cable (test 15). Not tested yet on the air.*
+  *Tested (test 23): receive 446.10625, shift -, offset 100 kHz: the chip's transmit frequency read 446.00625 and a UV-5R heard it.*
 - **Reverse:** with a shift set, holding `#` for 1.5 seconds listens on the repeater input; hold it again to swap back. On a split channel it swaps receive and transmit.
-  *Not tested yet.*
+  *Tested (test 23): holding `#` moved to 446.00625 and heard a UV-5R there; holding it again went back.*
 - **Mic gain:** 0-31, default 25. Menu Audio, Mic gain, or `MIC 25`; over the cable it also works while transmitting.
-  *Tested at 25 (test 11).*
+  *Tested at 25 (test 11); 18 against 25 compared on a UV-5R (test 23).*
 - **Time-out timer:** stops transmitting after 15 seconds to 10 minutes, default 60 seconds; transmit then stays locked out until you release the key. Menu RX/TX, Time-out.
   *Tested (test 11).*
 - **Transmit cut-off at switch-off:** if the supply drops while transmitting, for example when you switch off with PTT held, the firmware stops transmitting at once.
-  *Not tested yet. Until it is, release PTT before switching off (see [Known problems](#known-problems)).*
+  *Tested (test 23): switched off with PTT held, then a bootloader power-on: a UV-5R heard nothing. Still, don't switch on or off while transmitting.*
 
 ### On the radio
 
 - **VFO A and VFO B:** two VFOs, each with its own frequency, mode, step, shift, offset and tones. The main one is at the top; the other is on a small line under the main frequency, receive only. A short press of `*` swaps them. Over the cable: `VFO A` / `VFO B`.
   *Tested: switching over the cable (test 15), the `*` key by you (test 21).*
 - **Menu in groups:** see [Using the radio](#using-the-radio).
-  *Not tested yet.*
+  *Tested (test 28): Band and Power changed from the menu.*
 - **Tuning step:** 0.1, 1, 2.5, 5, 6.25, 10, 12.5, 25, 50 or 100 kHz, default 12.5 kHz. Menu RX/TX, Step.
   *Not tested yet.*
 - **Backlight:** five brightness levels. Menu Settings, Backlight.
@@ -89,9 +89,9 @@ Each feature says whether it has been tested on the radio, and with which test b
 
 - **Channel mode:** uses the channels already in the radio, as programmed by the stock software or CHIRP: frequency, split, mode, tones, power and name. A short press of `#` (the V/M key), or menu Memory, VFO / CH, switches between VFO and channel mode; menu Memory, Channel steps through the used channels. Up/down step through the used channels; type a channel number and `#` to jump to it. Over the cable: `CH 17`, `CHLIST`, `VFOMODE`.
   Channels marked "Only Rx" in CHIRP never transmit.
-  *Partly tested: `CHLIST` lists the radio's channels (test 18, over the cable); V/M on `#` tested by you (tests 21-22). Not tested yet: up/down and a number + `#` in channel mode.*
+  *Tested: `CHLIST` (test 18); V/M on `#` (tests 21-22); up / down and a number + `#` (test 28).*
 - **Programming with CHIRP or the stock CPS:** the firmware answers the stock programming protocol, so CHIRP (model Radtel RT-880G) and iRadio's CPS can read and write the channels. After a write, the radio restarts.
-  *Not tested yet.*
+  *CHIRP tested (test 28): an upload of all channels, then a download that matched it byte for byte. The stock CPS is not tested.*
 
 ### From a computer
 
@@ -275,7 +275,8 @@ Check your local rules before transmitting.
 
 ## Known problems
 
-- **Switching off while transmitting.** If the radio is switched off while transmitting, the radio chip keeps its transmit settings, and the next power-on into bootloader mode transmits until switched off. A normal power-on clears it. **Release PTT before switching off.** The stock firmware has the same gap. Test 16 and later stop transmitting when the supply voltage drops, which should close the gap, but this has not been tested on the radio yet.
+- **Switching off while transmitting.** Without protection, the radio chip keeps its transmit settings through a switch-off, and the next power-on into bootloader mode transmits until switched off (the stock firmware has the same gap). Test 16 and later stop transmitting when the supply voltage drops; in test 23 a switch-off with PTT held, then a bootloader power-on, gave nothing on a UV-5R. **Don't switch on or off while transmitting.**
+- **Dual watch on 70 cm.** The second receiver heard nothing from a UV-5R on 446 MHz (test 22), where the main receiver read it at -44 dBm; on 2 m it works. Its receive path is set the same on every frequency.
 - **Signal meter on strong signals.** Above about -45 dBm the reading compresses and reads low (a transmitter right next to the radio).
 
 ## Building from source
