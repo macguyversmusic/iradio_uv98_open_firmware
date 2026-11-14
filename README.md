@@ -9,7 +9,7 @@ Open firmware for the iRadio UV-98 Plus handheld (Radtel RT-880G family, FCC ID 
 ## Features
 
 - **Receive:** 18-660 MHz and 840-1300 MHz in FM, NFM, AM and USB. Noise squelch, CTCSS and DCS tone squelch, signal meter, AGC for USB and AM. Dual watch on the radio's second receiver chip, band scan, spectrum view and frequency detect.
-- **Transmit:** amateur bands only (all three ITU regions), plus marine VHF capped at MID power. Power MIN, LOW, MID and HIGH from the radio's own calibration. CTCSS and DCS, a 1750 Hz burst on the alarm button, repeater shift and offset with reverse, and a time-out timer.
+- **Transmit:** amateur bands only (all three ITU regions), plus marine VHF capped at MID power. Power LOW, MID and HIGH from the radio's own calibration. CTCSS and DCS, a 1750 Hz burst on the alarm button, repeater shift and offset with reverse, and a time-out timer.
 - **On the radio:** boot splash, high-contrast screen with smooth fonts, VFO A and B (the other VFO on a small line above the meter), a menu in groups with number shortcuts, key lock, backlight timeout and a low-battery warning. Band presets: 10 m, 6 m, air (receive only), 2 m, marine, 220 MHz, 70 cm, 23 cm. The LED is green when receiving, yellow when a signal is held back by the tone squelch, and red when transmitting.
 - **From a computer:** serial commands over the programming cable, including transmit (PTT with a keep-alive), and the satellite tracker in [tracker/](tracker/README.md).
 - **Saved settings:** both VFOs, power, mic gain, squelch, time-out, backlight, light timeout, band memories, channel mode and screen style are kept in a spare SPI flash sector (0xFC000), saved 3 seconds after a change.
@@ -131,7 +131,7 @@ The groups and their items:
 | `M FM\|NFM\|AM\|USB` | Set the mode |
 | `SQ 0-9`, `VOL 0-63` | Squelch level (0 = open), receive audio level |
 | `MIC [0-31]` | Show or set the mic gain (default 25); works while transmitting |
-| `POW [MIN\|LOW\|MID\|HIGH]` | Show or set the transmit power (default MIN) |
+| `POW [LOW\|MID\|HIGH]` | Show or set the transmit power (default LOW) |
 | `T [OFF\|88.5\|D023N\|D023I]` | Transmit tone: CTCSS in Hz, or DCS normal / inverted |
 | `RT [OFF\|88.5\|D023N\|D023I]` | Receive tone squelch (FM / NFM) |
 | `SHIFT [OFF\|+\|-]`, `OFFSET [MHz]` | Repeater shift and offset |
@@ -179,7 +179,7 @@ This produces `firmware/build/uv98plus_openfw.bin`, built with gcc-arm-none-eabi
 - **Allowed:** amateur bands of all three ITU regions that the radio chip can tune: 17 m, 15 m, 12 m, 10 m, 8 m, 6 m, 4 m, 2 m, 1.25 m, 70 cm, 33 cm and 23 cm. See `tx_ranges` in `firmware/src/main.c`.
 - **Marine VHF** 156.000-162.025 MHz, capped at MID power. Marine use normally needs a marine licence and type-approved equipment.
 - **Everything else is refused,** including the air band. Whether the radio actually radiates on HF, 6 m, 4 m, 33 cm and 23 cm has not been tested.
-- **Power:** MIN by default (radio chip only, no amplifier). LOW, MID and HIGH use the radio's calibration with the band's amplifier on, as stock does.
+- **Power:** LOW by default. LOW, MID and HIGH use the radio's calibration with the band's amplifier on, as stock does.
 - **Time-out timer:** 60 seconds by default (menu), then locked out until the key is released. Watchdog on.
 
 Check your local rules before transmitting.

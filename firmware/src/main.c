@@ -1,5 +1,5 @@
 /* UV-98 Plus / RT-880G open firmware, test 10: receive FM/NFM/AM/USB, squelch, side keys, voice TX on
- * the amateur bands (power MIN by default, LOW/MID/HIGH from calibration), CTCSS/DCS on TX, 1750 Hz
+ * the amateur bands (power LOW by default, LOW/MID/HIGH from calibration), CTCSS/DCS on TX, 1750 Hz
  * burst on the alarm button, 60 s time-out timer, CTCSS/DCS tone squelch on receive (test 11).
  * Pin map and stock sequences: ../FINDINGS.md. BK4819 #1 is the radio; #2 is reset and put to sleep. */
 #include "at32f423.h"
@@ -686,12 +686,12 @@ static const struct { uint32_t lo, hi; uint8_t maxpow; } tx_ranges[] = {
     { 124000000, 130000000, 3 },   /* 23 cm  1240-1300 */
     {  15600000,  16202500, 2 },   /* marine VHF 156.000-162.025, MID at most */
 };
-/* Transmit power. MIN (the default): BK4819 PA level 8 with no external amplifier. LOW, MID, HIGH:
- * stock levels (0x80053F0 / 0x8004F0C) from this radio's calibration, with the band's amplifier on. */
-enum { PWR_MIN, PWR_LOW, PWR_MID, PWR_HIGH };
-static const char *const power_name[] = { "MIN", "LOW", "MID", "HIGH" };
-static int power = PWR_MIN;
-#define TX_POWER_MIN ((8u << 10) | 0xFF)
+/* Transmit power LOW (the default), MID, HIGH: stock levels (0x80053F0 / 0x8004F0C) from this radio's
+ * calibration, with the band's amplifier on. Numbered 1-3 (saved settings, channel power, band caps). */
+enum { PWR_LOW = 1, PWR_MID, PWR_HIGH };
+static const char *const power_name[] = { "LOW", "LOW", "MID", "HIGH" };
+static int power = PWR_LOW;
+#define TX_POWER_NOCAL ((8u << 10) | 0xFF)   /* radio chip only, if a frequency has no power calibration */
 
 /* This radio's power calibration (SPI 0x20 + block * 0x70: +0x10 high, +0x20 low), one entry per
  * 5 MHz from the base, capped at entry 15 (stock 0x8012A30). Ranges inclusive, checked in order. */
@@ -723,10 +723,9 @@ static const pwr_cal_t pwr_cal[] = {
        { 0x19,0x19,0x19,0x19,0x19,0x19,0x19,0x19,0x19,0x19,0x19,0x19,0x19,0x19,0x19,0x19 } },
 };
 
-/* 0x36 value for the current power level at f; 0 means use TX_POWER_MIN without the amplifier. */
+/* 0x36 value for the power level at f; 0 means no calibration: TX_POWER_NOCAL without the amplifier. */
 static uint16_t power_reg(uint32_t f, int power)
 {
-    if (power == PWR_MIN) return 0;
     int ci = cal_index(f);
     if (ci >= 0) {
         const uint8_t *b = cal_blk[cal_map[ci].blk];
@@ -1124,7 +1123,7 @@ static int tx_start(int burst)
         }
         bk1_write(0x36, p);
     } else {
-        bk1_write(0x36, TX_POWER_MIN);
+        bk1_write(0x36, TX_POWER_NOCAL);
     }
     tx_on = 1;
     return 1;
@@ -2101,7 +2100,7 @@ static void set_load(void)
     const vfo_t *v = &vfos[vfo_cur];
     freq10 = v->freq; mode = v->mode % NMODES; step_idx = v->step; ofs_idx = v->ofs; shift = v->shift;
     tone_type = v->tt; tone_val = v->tv; rx_tone_type = v->rt; rx_tone_val = v->rv;
-    power = vfo_power = s.power & 3; mic_gain = s.mic & 31; sq_level = s.sq % 10; tot_idx = s.tot; bl_idx = s.bl % 5;
+    power = vfo_power = (s.power & 3) ? (s.power & 3) : PWR_LOW; mic_gain = s.mic & 31; sq_level = s.sq % 10; tot_idx = s.tot; bl_idx = s.bl % 5;
     light_idx = s.light; edge = s.edge & 3; P = &palettes[s.pal & 1];
     F_MED = s.font == 1 ? &font_med : &font_med2; F_SMALL = s.font == 1 ? &font_small : &font_small2;
     for (int i = 0; i < NRXBANDS; i++) band_freq[i] = s.band_freq[i];
@@ -2344,7 +2343,7 @@ static void menu_change(int item, int dir)
         band_last = b;
         break;
     }
-    case MI_POWER: power = (power + dir + 4) % 4; break;
+    case MI_POWER: power = (power - PWR_LOW + dir + 3) % 3 + PWR_LOW; break;
     case MI_SHIFT: { int i = shift == 0 ? 0 : shift > 0 ? 1 : 2; i = (i + dir + 3) % 3; shift = i == 0 ? 0 : i == 1 ? 1 : -1; break; }
     case MI_OFFSET: ofs_idx = clampi(ofs_idx + dir, 0, NOFS - 1); break;
     case MI_MIC: mic_gain = clampi(mic_gain + dir, 0, 31); break;
@@ -2686,8 +2685,8 @@ static void command(char *cmd)
     } else if (cmd[0] == 'P' && cmd[1] == 'O' && cmd[2] == 'W' && (cmd[3] == ' ' || cmd[3] == 0)) {
         if (cmd[3] == ' ') {
             int n = -1;
-            for (int i = 0; i < 4; i++) if (!__builtin_strcmp(cmd + 4, power_name[i])) n = i;
-            if (n < 0) { uart_puts("ERR POW MIN, LOW, MID or HIGH\r\n"); return; }
+            for (int i = PWR_LOW; i <= PWR_HIGH; i++) if (!__builtin_strcmp(cmd + 4, power_name[i])) n = i;
+            if (n < 0) { uart_puts("ERR POW LOW, MID or HIGH\r\n"); return; }
             if (tx_on) { uart_puts("ERR transmitting\r\n"); return; }
             power = n;
             show_chips();
@@ -2859,7 +2858,7 @@ static void command(char *cmd)
         uart_puts("CLK "); put_dec((int32_t)(system_core_clock / 1000000u));
         uart_puts(" MHZ, BOOTLOADER LEFT "); put_dec((int32_t)(boot_clock / 1000000u)); uart_puts(" MHZ\r\n");
     } else if (!__builtin_strcmp(cmd, "HELP")) {
-        uart_puts("PING, VER, F [MHz], M FM|NFM|AM|USB, RSSI, SQ 0-9, VOL 0-63, MIC [0-31], POW [MIN|LOW|MID|HIGH], T [OFF|67.0|D023N|D023I], RT [same, receive], SHIFT [OFF|+|-], OFFSET [MHz], VFO [A|B], PTT ON|OFF (repeat ON within 2 s), DW [ON|OFF], SCAN ON|OFF, SPEC, FDET, CH [n], CHLIST [n], VFOMODE, SAVE, SETTINGS, CAL, SPIID, SPIRD, AGC, ADC, R1 xx, R2 xx. TX: PTT1 voice, alarm button 1750 Hz, amateur bands only.\r\n");
+        uart_puts("PING, VER, F [MHz], M FM|NFM|AM|USB, RSSI, SQ 0-9, VOL 0-63, MIC [0-31], POW [LOW|MID|HIGH], T [OFF|67.0|D023N|D023I], RT [same, receive], SHIFT [OFF|+|-], OFFSET [MHz], VFO [A|B], PTT ON|OFF (repeat ON within 2 s), DW [ON|OFF], SCAN ON|OFF, SPEC, FDET, CH [n], CHLIST [n], VFOMODE, SAVE, SETTINGS, CAL, SPIID, SPIRD, AGC, ADC, R1 xx, R2 xx. TX: PTT1 voice, alarm button 1750 Hz, amateur bands only.\r\n");
     } else {
         uart_puts("ERR unknown command, try HELP\r\n");
     }

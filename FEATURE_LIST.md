@@ -62,9 +62,9 @@ What the open firmware (test 18) does, and how to use each feature. Unless a fea
 
   156.000-162.025 MHz, capped at MID. Use it only where you are licensed to.
 
-- **Power: MIN, LOW, MID, HIGH**
+- **Power: LOW, MID, HIGH**
 
-  Each level comes from the radio's own calibration. MIN uses the radio chip alone; LOW, MID and HIGH switch the band's amplifier on, as stock does. The default is MIN. Menu RX/TX, Power, or `POW LOW`. In channel mode each channel uses its own power. The real output in watts has not been measured.
+  Each level comes from the radio's own calibration, with the band's amplifier on, as stock does. The default is LOW. Menu RX/TX, Power, or `POW LOW`. In channel mode each channel uses its own power. The real output in watts has not been measured.
 
 - **Transmit tone (CTCSS and DCS)**
 
