@@ -67,7 +67,7 @@ This reads all 4 MB of the radio's SPI flash, including its channels, settings a
 
 ## 2. Get the official firmware (to go back to stock)
 
-Download iRadio's "UV98plus V1_16 Upgrade Tool 250915" for the UV-98 Plus, then extract the firmware from it. The tool accepts the zip or the .exe inside it:
+Download iRadio's "UV98plus V1_16 Upgrade Tool 250915" for the UV-98 Plus, then extract the firmware from it. The tool accepts the zip or the .exe inside it: https://www.qziradio.com/filedownload/1020912 https://www.qziradio.com/downloads page 2
 
 ```sh
 python3 tools/extract_upgrade_tool.py "UV98plus+V1_16+Upgrade+Tool+250915__Slow.zip" uv98plus_V1.16_250915.bin
