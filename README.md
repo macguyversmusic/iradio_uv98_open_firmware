@@ -14,10 +14,11 @@ Open firmware for the iRadio UV-98 Plus handheld (Radtel RT-880G family, FCC ID 
 | Noise squelch (tested on NFM, PMR446) | 7 |
 | Transmit a 1 kHz tone on PMR446, heard on another radio | 7 |
 | Voice transmit at minimum power on PMR446 (heard on another radio, but the audio is low) | 8 |
-| Stock transmit audio settings; voice clearly heard at mic gain 31 (the stock 18 is too quiet) | 9 |
+| Stock transmit audio settings; at minimum power voice is clear only at mic gain 31 (see test 11: the weak minimum-power signal was most of the problem) | 9 |
 | Transmit on the amateur bands; 1750 Hz burst on the alarm button, heard on another radio | 10 |
-| Power levels from calibration, 60 s time-out timer, CTCSS/DCS on transmit, USB receive | 10 (built, being tested) |
-| CTCSS/DCS tone squelch on receive; starts on PMR 1 NFM | 11 (built, being tested) |
+| Power LOW from calibration (voice crystal clear; MID and HIGH not tested yet), 2 m transmit, 60 s time-out timer | 11 |
+| CTCSS 88.5 and DCS 023 normal / inverted on transmit and as tone squelch on receive, each checked against a UV-5R | 11 |
+| USB receive (a carrier 1 kHz up gives a steady 1 kHz tone); starts on PMR 1 NFM | 11 |
 
 Next steps: channels and settings from the radio's SPI flash, menus (mic gain, power, tones and the rest), a stock-style screen, automatic gain control for USB, the second radio chip, FM broadcast and scanning.
 
