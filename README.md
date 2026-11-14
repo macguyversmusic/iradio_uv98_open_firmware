@@ -300,7 +300,6 @@ This produces `firmware/build/uv98plus_openfw.bin`, built with gcc-arm-none-eabi
 | `tools/rigctld.py` | Hamlib network (rigctld) bridge |
 | `tracker/` | Satellite tracker |
 | [FINDINGS.md](FINDINGS.md) | The chips, the hardware, the protocols and the tooling, as worked out from the stock firmware and the radio |
-| [TODO.md](TODO.md) | Where the work stands: what has been tested and what is next |
 
 Not included: Radtel/iRadio firmware, vendor tools, decompiled stock code and datasheets. The stock firmware was studied in Ghidra (raw binary, ARM Cortex, base address 0x08002800); the results are in FINDINGS.md.
 
