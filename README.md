@@ -12,7 +12,8 @@ Open firmware for the iRadio UV-98 Plus handheld (Radtel RT-880G family, FCC ID 
 - **Transmit:** amateur bands only (all three ITU regions), plus marine VHF capped at MID power. Power MIN, LOW, MID and HIGH from the radio's own calibration. CTCSS and DCS, a 1750 Hz burst on the alarm button, repeater shift and offset with reverse, and a time-out timer.
 - **On the radio:** boot splash, high-contrast screen with smooth fonts, VFO A and B, and a menu with number shortcuts. Band presets: 10 m, 6 m, air (receive only), 2 m, marine, 220 MHz, 70 cm, 23 cm. The LED is green when receiving, yellow when a signal is held back by the tone squelch, and red when transmitting.
 - **From a computer:** serial commands over the programming cable, including transmit (PTT with a keep-alive), and the satellite tracker in [tracker/](tracker/README.md).
-- **Not included:** no FM broadcast, no channels yet. Settings are not kept after power-off yet.
+- **Saved settings:** both VFOs, power, mic gain, squelch, time-out, backlight, band memories and screen style are kept in a spare SPI flash sector (0xFC000), saved 3 seconds after a change.
+- **Not included:** no FM broadcast, no channels yet.
 
 ## What you need
 
@@ -140,6 +141,9 @@ The items are:
 | `SHIFT [OFF\|+\|-]`, `OFFSET [MHz]` | Repeater shift and offset |
 | `VFO [A\|B]` | Show or select the VFO |
 | `PTT ON`, `PTT OFF`, `PTT` | Transmit from the computer. `PTT ON` must be repeated at least every 2 seconds or transmit stops (`PTT TIMEOUT`); band limits, power and the time-out timer apply |
+| `DW [ON\|OFF]`, `SCAN ON\|OFF`, `SPEC`, `FDET` | Dual watch, band scan, one spectrum sweep (44 dBm values), frequency detect |
+| `SAVE`, `SETTINGS` | Save settings now; show whether settings were loaded at start-up |
+| `CAL`, `SPIID`, `SPIRD addr [len]`, `AGC [ON\|OFF]`, `W1 reg value` | Calibration source, flash chip ID, read flash (hex), USB/AM AGC, write a radio-chip register (transmit registers refused) |
 | `RSSI`, `ADC` | Signal strength; side-key and battery readings |
 | `R1 xx`, `R2 xx` | Read register xx of radio chip 1 or 2 |
 | `FONT 1\|2`, `EDGE 0-3`, `PAL 1\|2` | Screen style (defaults FONT 2, EDGE 2, PAL 2) |

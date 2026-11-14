@@ -3,10 +3,13 @@
  * burst on the alarm button, 60 s time-out timer, CTCSS/DCS tone squelch on receive (test 11).
  * Pin map and stock sequences: ../FINDINGS.md. BK4819 #1 is the radio; #2 is reset and put to sleep. */
 #include "at32f423.h"
+#include <stddef.h>
 #include "fonts_aa.h"
 
-#define FW_NAME  "UV98+ open test 16"
+#define FW_NAME  "UV98+ open test 17"
 #define APP_BASE 0x08002800u
+
+static void report_freq(void);
 
 /* ---------------- timing ---------------- */
 static volatile uint32_t ticks;
@@ -1631,7 +1634,11 @@ static void scan_stop(void)
 
 static void scan_step(void)
 {
-    if (audio_on) { scan_hold_until = ticks + 3000; return; }
+    if (audio_on) {
+        if ((int32_t)(ticks - scan_hold_until) >= 0) { uart_puts("SCAN STOPPED ON SIGNAL\r\n"); report_freq(); }
+        scan_hold_until = ticks + 3000;
+        return;
+    }
     if ((int32_t)(ticks - scan_hold_until) < 0 || (int32_t)(ticks - scan_next) < 0) return;
     int b = rxband_of(freq10);
     if (b < 0) { scan_stop(); return; }
@@ -1718,11 +1725,13 @@ static void fdet_poll(void)
         uint32_t f = raw + 0x8028u - cal_word(freq10, b ? b->cal : 0x8000);
         f = (f + 50) / 100 * 100;                      /* nearest 1 kHz */
         fdet_stop();
+        uart_puts("FDET FOUND\r\n");
         if (radio_tune(f)) { show_freq(); show_status("FOUND", C_GREEN); report_freq(); }
         else show_status("FOUND, OUT OF RANGE", C_YELLOW);
     } else if ((int32_t)(ticks - fdet_until) >= 0) {
         fdet_stop();
         show_status("NOTHING FOUND", C_YELLOW);
+        uart_puts("FDET NOTHING FOUND\r\n");
     }
 }
 
@@ -1790,6 +1799,8 @@ static void dw_poll(void)
             dw_quiet_since = ticks;
             show_freq();
             show_status(vfo_cur ? "DUAL WATCH: B" : "DUAL WATCH: A", C_GREEN);
+            uart_puts("DW SWITCHED\r\n");
+            report_freq();
         }
     } else {
         if (audio_on) dw_quiet_since = ticks;
@@ -1800,6 +1811,115 @@ static void dw_poll(void)
             show_status("RX", C_GREEN);
         }
     }
+}
+
+/* ---------------- saved settings (SPI flash sector 0xFC000) ---------------- */
+/* Sector 0xFC000 is empty on our radio and outside every stock programming region (0x90-0xA3) and the
+ * sectors stock writes on its own (0x0000-0x3FFF, 0x10000-0x1BFFF, 0x88000-0x93FFF, 0xD6000-0xD7FFF,
+ * 0x12E000-0x14BFFF). Written 3 s after the last change, never while transmitting; checked by a
+ * checksum and read back. */
+#define SET_ADDR  0xFC000u
+#define SET_MAGIC 0x53383955u          /* "U98S" */
+typedef struct {
+    uint32_t magic;
+    uint16_t version, size;
+    vfo_t vfo[2];
+    uint8_t vfo_cur, power, mic, sq, tot, bl, light, edge, pal, font;
+    uint32_t band_freq[NRXBANDS];
+    uint32_t sum;
+} settings_t;
+static uint32_t set_saved_sum, set_change_at;
+static int set_loaded, set_saves;
+
+static uint32_t set_checksum(const settings_t *s)
+{
+    const uint8_t *b = (const uint8_t *)s;
+    uint32_t h = 2166136261u;                         /* FNV-1a over everything before sum */
+    for (unsigned i = 0; i < offsetof(settings_t, sum); i++) h = (h ^ b[i]) * 16777619u;
+    return h;
+}
+
+static void set_collect(settings_t *s)
+{
+    __builtin_memset(s, 0, sizeof *s);
+    s->magic = SET_MAGIC; s->version = 1; s->size = sizeof *s;
+    vfo_t *v = &vfos[vfo_cur];                        /* the current VFO's live state */
+    v->freq = freq10; v->mode = (uint8_t)mode; v->step = (uint8_t)step_idx; v->ofs = (uint8_t)ofs_idx;
+    v->shift = (int8_t)shift; v->tt = (uint8_t)tone_type; v->tv = tone_val; v->rt = (uint8_t)rx_tone_type; v->rv = rx_tone_val;
+    s->vfo[0] = vfos[0]; s->vfo[1] = vfos[1];
+    s->vfo_cur = (uint8_t)vfo_cur; s->power = (uint8_t)power; s->mic = (uint8_t)mic_gain; s->sq = (uint8_t)sq_level;
+    s->tot = (uint8_t)tot_idx; s->bl = (uint8_t)bl_idx; s->light = (uint8_t)light_idx; s->edge = (uint8_t)edge;
+    s->pal = (uint8_t)(P - palettes); s->font = F_MED == &font_med ? 1 : 2;
+    for (int i = 0; i < NRXBANDS; i++) s->band_freq[i] = band_freq[i];
+    s->sum = set_checksum(s);
+}
+
+static void flash_wait(void)
+{
+    for (;;) {
+        wdt_counter_reload();
+        gpio_bits_reset(GPIOB, GPIO_PINS_12);
+        flash_xfer(0x05);
+        uint8_t st = flash_xfer(0xFF);
+        gpio_bits_set(GPIOB, GPIO_PINS_12);
+        if (!(st & 1)) return;
+    }
+}
+
+static void flash_cmd_addr(uint8_t cmd, uint32_t addr)
+{
+    gpio_bits_reset(GPIOB, GPIO_PINS_12); flash_xfer(0x06); gpio_bits_set(GPIOB, GPIO_PINS_12);   /* write enable */
+    gpio_bits_reset(GPIOB, GPIO_PINS_12);
+    flash_xfer(cmd);
+    flash_xfer((uint8_t)(addr >> 16)); flash_xfer((uint8_t)(addr >> 8)); flash_xfer((uint8_t)addr);
+}
+
+static int set_save(void)
+{
+    settings_t s, chk;
+    set_collect(&s);
+    flash_cmd_addr(0x20, SET_ADDR);                    /* 4 KB sector erase */
+    gpio_bits_set(GPIOB, GPIO_PINS_12);
+    flash_wait();
+    flash_cmd_addr(0x02, SET_ADDR);                    /* page program */
+    const uint8_t *b = (const uint8_t *)&s;
+    for (unsigned i = 0; i < sizeof s; i++) flash_xfer(b[i]);
+    gpio_bits_set(GPIOB, GPIO_PINS_12);
+    flash_wait();
+    flash_read(SET_ADDR, (uint8_t *)&chk, sizeof chk);
+    if (__builtin_memcmp(&s, &chk, sizeof s)) return 0;
+    set_saved_sum = s.sum;
+    set_saves++;
+    return 1;
+}
+
+/* Apply saved settings at start-up (after cal_load, before radio_init tunes). */
+static void set_load(void)
+{
+    settings_t s;
+    flash_read(SET_ADDR, (uint8_t *)&s, sizeof s);
+    if (s.magic != SET_MAGIC || s.version != 1 || s.size != sizeof s || s.sum != set_checksum(&s)) return;
+    vfos[0] = s.vfo[0]; vfos[1] = s.vfo[1];
+    vfo_cur = s.vfo_cur & 1;
+    const vfo_t *v = &vfos[vfo_cur];
+    freq10 = v->freq; mode = v->mode % NMODES; step_idx = v->step; ofs_idx = v->ofs; shift = v->shift;
+    tone_type = v->tt; tone_val = v->tv; rx_tone_type = v->rt; rx_tone_val = v->rv;
+    power = s.power & 3; mic_gain = s.mic & 31; sq_level = s.sq % 10; tot_idx = s.tot; bl_idx = s.bl % 5;
+    light_idx = s.light; edge = s.edge & 3; P = &palettes[s.pal & 1];
+    F_MED = s.font == 1 ? &font_med : &font_med2; F_SMALL = s.font == 1 ? &font_small : &font_small2;
+    for (int i = 0; i < NRXBANDS; i++) band_freq[i] = s.band_freq[i];
+    set_saved_sum = s.sum;
+    set_loaded = 1;
+}
+
+/* Called from the main loop: save 3 s after the settings last changed. */
+static void set_autosave(void)
+{
+    static uint32_t last_sum;
+    settings_t s;
+    set_collect(&s);
+    if (s.sum != last_sum) { last_sum = s.sum; set_change_at = ticks; return; }
+    if (s.sum != set_saved_sum && !tx_on && (int32_t)(ticks - set_change_at) >= 3000) set_save();
 }
 
 /* ---------------- menu ---------------- */
@@ -2291,6 +2411,36 @@ static void command(char *cmd)
         if (reg == 0x30 || reg == 0x33 || reg == 0x36 || reg == 0x37 || reg == 0x52) { uart_puts("ERR register not allowed\r\n"); return; }
         bk1_write((uint8_t)reg, (uint16_t)val);
         uart_puts("W1 "); put_hex(reg, 2); uart_puts(" = "); put_hex(val, 4); uart_puts("\r\n");
+    } else if (!__builtin_strcmp(cmd, "SAVE")) {
+        uart_puts(set_save() ? "SAVED\r\n" : "ERR save failed (read-back differs)\r\n");
+    } else if (!__builtin_strcmp(cmd, "SETTINGS")) {
+        uart_puts(set_loaded ? "SETTINGS LOADED AT START-UP, " : "SETTINGS NOT LOADED (NONE SAVED YET), ");
+        put_dec(set_saves); uart_puts(" SAVES SINCE START-UP\r\n");
+    } else if (!__builtin_strcmp(cmd, "DW ON") || !__builtin_strcmp(cmd, "DW OFF") || !__builtin_strcmp(cmd, "DW")) {
+        if (cmd[2] && cmd[4] == 'N' && !dw_on) dw_start();
+        if (cmd[2] && cmd[4] == 'F' && dw_on) dw_stop();
+        uart_puts(dw_on ? "DW ON" : "DW OFF");
+        if (dw_on) { uart_puts(", WATCHING "); char f[16]; fmt_freq(f, dw_freq); uart_puts(f); uart_puts(dw_hop ? ", SWITCHED" : ""); }
+        uart_puts("\r\n");
+    } else if (!__builtin_strcmp(cmd, "SCAN ON") || !__builtin_strcmp(cmd, "SCAN OFF")) {
+        if (cmd[6] == 'N') scan_start(); else scan_stop();
+        uart_puts(scanning ? "SCAN ON\r\n" : "SCAN OFF\r\n");
+    } else if (!__builtin_strcmp(cmd, "SPEC")) {
+        /* One sweep: 44 points around the current frequency at the menu step, dBm each. */
+        uint32_t center = freq10, st = step_list[step_idx];
+        audio_close();
+        uart_puts("SPEC "); put_dec((int32_t)st); uart_puts("0 HZ STEP:");
+        for (int i = 0; i < SPEC_N; i++) {
+            wdt_counter_reload();
+            uart_puts(" ");
+            if (radio_tune(center + (uint32_t)(i - SPEC_N / 2) * st)) { delay_ms(2); put_dec(rssi_dbm()); }
+            else uart_puts("X");
+        }
+        radio_tune(center);
+        uart_puts("\r\n");
+    } else if (!__builtin_strcmp(cmd, "FDET")) {
+        fdet_start();
+        uart_puts("FDET STARTED (20 S)\r\n");
     } else if (cmd[0] == 'M' && cmd[1] == 'I' && cmd[2] == 'C' && (cmd[3] == ' ' || cmd[3] == 0)) {
         int v;
         if (cmd[3] == ' ') {
@@ -2304,7 +2454,7 @@ static void command(char *cmd)
         uart_puts("CLK "); put_dec((int32_t)(system_core_clock / 1000000u));
         uart_puts(" MHZ, BOOTLOADER LEFT "); put_dec((int32_t)(boot_clock / 1000000u)); uart_puts(" MHZ\r\n");
     } else if (!__builtin_strcmp(cmd, "HELP")) {
-        uart_puts("PING, VER, F [MHz], M FM|NFM|AM|USB, RSSI, SQ 0-9, VOL 0-63, MIC [0-31], POW [MIN|LOW|MID|HIGH], T [OFF|67.0|D023N|D023I], RT [same, receive], SHIFT [OFF|+|-], OFFSET [MHz], VFO [A|B], PTT ON|OFF (repeat ON within 2 s), ADC, R1 xx, R2 xx. TX: PTT1 voice, alarm button 1750 Hz, amateur bands only.\r\n");
+        uart_puts("PING, VER, F [MHz], M FM|NFM|AM|USB, RSSI, SQ 0-9, VOL 0-63, MIC [0-31], POW [MIN|LOW|MID|HIGH], T [OFF|67.0|D023N|D023I], RT [same, receive], SHIFT [OFF|+|-], OFFSET [MHz], VFO [A|B], PTT ON|OFF (repeat ON within 2 s), DW [ON|OFF], SCAN ON|OFF, SPEC, FDET, SAVE, SETTINGS, CAL, SPIID, SPIRD, AGC, ADC, R1 xx, R2 xx. TX: PTT1 voice, alarm button 1750 Hz, amateur bands only.\r\n");
     } else {
         uart_puts("ERR unknown command, try HELP\r\n");
     }
@@ -2378,6 +2528,7 @@ int main(void)
 
     flash_init();
     cal_load();
+    set_load();
     radio_init();
     show_freq();
     show_status("RX", C_GREEN);
@@ -2397,7 +2548,7 @@ int main(void)
     uint32_t rep_at = 0, green_since = 0;
     int green_used = 1;
     uint32_t tx_until = 0;
-    uint32_t next_scan = 0, next_rssi = 0, next_sq = 0, next_batt = 10000;
+    uint32_t next_scan = 0, next_rssi = 0, next_sq = 0, next_batt = 10000, next_save = 5000;
     int last_rssi = -160, last_noise = 127, open_count = 0, close_count = 0, last_side = SIDE_NONE;
 
     for (;;) {
@@ -2593,6 +2744,11 @@ int main(void)
             lit = 0;
             backlight(0);
             gpio_bits_reset(GPIOA, GPIO_PINS_9);
+        }
+
+        if (!tx_on && (int32_t)(ticks - next_save) >= 0) {
+            next_save = ticks + 1000;
+            set_autosave();
         }
 
         if (!tx_on && (int32_t)(ticks - next_batt) >= 0) {
