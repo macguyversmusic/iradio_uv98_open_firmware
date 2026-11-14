@@ -757,7 +757,8 @@ static int bl_idx = 4;
 /* Backlight timeout (menu "Light off"); the keypad light (PA9) follows the backlight. */
 static const uint8_t light_list[] = { 0, 10, 20, 30, 60 };          /* seconds, 0 = always on */
 static const char *const light_name[] = { "ALWAYS", "10 s", "20 s", "30 s", "60 s" };
-static int light_idx = 0, lit = 1, locked, scanning;
+static int light_idx = 0, lit = 1, locked, scanning, spectrum_on, fdet_on;
+static uint32_t fdet_next, fdet_until;
 static uint32_t last_activity, scan_next, scan_hold_until;
 
 /* 1750 Hz tone burst: tone 1 frequency word, Hz * 10.3 (the stock tone formula, Hz / 10 * 0x67). */
@@ -1641,6 +1642,89 @@ static void scan_step(void)
     scan_next = ticks + 150;
 }
 
+static void report_freq(void);
+
+/* Spectrum: 44 points around the current frequency at the menu step, signal strength as bars. */
+#define SPEC_N   44
+#define SPEC_TOP 104
+#define SPEC_H   136
+static void spectrum_start(void)
+{
+    audio_close();
+    spectrum_on = 1;
+    lcd_fill(0, SPEC_TOP, LCD_W, Y_MSCALE + F_SMALL->height - SPEC_TOP, C_BLACK);
+    char s[32] = "SPECTRUM, STEP ";
+    int p = 15;
+    for (const char *q = step_name[step_idx]; *q; q++) s[p++] = *q;
+    s[p] = 0;
+    aa_text_c(SPEC_TOP + SPEC_H + 8, F_SMALL, s, P->dim, C_BLACK);
+}
+
+static void spectrum_sweep(void)
+{
+    uint32_t center = freq10, st = step_list[step_idx];
+    for (int i = 0; i < SPEC_N; i++) {
+        wdt_counter_reload();
+        uint32_t f = center + (uint32_t)(i - SPEC_N / 2) * st;
+        int h = 0;
+        if (radio_tune(f)) {
+            delay_ms(2);
+            h = (rssi_dbm() + 125) * SPEC_H / 100;
+            if (h < 1) h = 1;
+            if (h > SPEC_H) h = SPEC_H;
+        }
+        int x = 10 + i * 5;
+        lcd_fill(x, SPEC_TOP, 4, SPEC_H - h, C_BLACK);
+        lcd_fill(x, SPEC_TOP + SPEC_H - h, 4, h, i == SPEC_N / 2 ? C_YELLOW : C_WHITE);
+    }
+    radio_tune(center);
+}
+
+static void spectrum_stop(void)
+{
+    spectrum_on = 0;
+    radio_tune(freq10);
+    draw_home();
+}
+
+/* Frequency detect (stock 0x8004B70 / 0x8004B24): the chip's frequency scan, 0x32 = 0x0B01; when 0x0D
+ * bit 15 is clear, (0x0D & 0x7FF) << 16 | 0x0E + 0x8028 - calibration word is the frequency found. */
+static void fdet_start(void)
+{
+    audio_close();
+    bk1_write(0x32, 0x0B01);
+    fdet_on = 1;
+    fdet_next = ticks + 200;
+    fdet_until = ticks + 20000;
+    show_status("DETECTING", C_GREEN);
+}
+
+static void fdet_stop(void)
+{
+    bk1_write(0x32, 0x0000);
+    fdet_on = 0;
+    radio_tune(freq10);
+}
+
+static void fdet_poll(void)
+{
+    if ((int32_t)(ticks - fdet_next) < 0) return;
+    fdet_next = ticks + 200;
+    uint16_t r0d = bk_read(0, 0x0D);
+    if (!(r0d & 0x8000)) {
+        uint32_t raw = ((uint32_t)(r0d & 0x7FF) << 16) | bk_read(0, 0x0E);
+        const band_t *b = band_of(freq10);
+        uint32_t f = raw + 0x8028u - cal_word(freq10, b ? b->cal : 0x8000);
+        f = (f + 50) / 100 * 100;                      /* nearest 1 kHz */
+        fdet_stop();
+        if (radio_tune(f)) { show_freq(); show_status("FOUND", C_GREEN); report_freq(); }
+        else show_status("FOUND, OUT OF RANGE", C_YELLOW);
+    } else if ((int32_t)(ticks - fdet_until) >= 0) {
+        fdet_stop();
+        show_status("NOTHING FOUND", C_YELLOW);
+    }
+}
+
 /* ---------------- menu ---------------- */
 /* Green bar opens it; up/down picks an item; green edits; up/down changes the value (applied at once,
  * up/down repeat when held); # jumps to the next tone type; green keeps the value, red bar restores
@@ -1680,11 +1764,11 @@ static void tone_from_index(int i, int *type, uint16_t *val)
 }
 
 enum { MI_BAND, MI_POWER, MI_TXTONE, MI_RXTONE, MI_SHIFT, MI_OFFSET, MI_SQ, MI_STEP, MI_MODE, MI_MIC, MI_TOT, MI_BL,
-       MI_LIGHT, MI_SCAN, MI_COUNT };
+       MI_LIGHT, MI_SCAN, MI_SPECTRUM, MI_FDET, MI_COUNT };
 static const char *const menu_name[MI_COUNT] = {
     "Band", "Power", "TX tone", "RX tone", "Shift", "Offset", "Squelch", "Step", "Mode", "Mic gain", "Time-out", "Backlight",
-    "Light off", "Scan" };
-static const char menu_key_of[MI_COUNT] = { '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '*', '#', ' ', ' ' };
+    "Light off", "Scan", "Spectrum", "Freq detect" };
+static const char menu_key_of[MI_COUNT] = { '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '*', '#', ' ', ' ', ' ', ' ' };
 static int menu_sel, menu_edit;
 
 static void put2(char *s, int v) { if (v >= 10) *s++ = (char)('0' + v / 10); *s++ = (char)('0' + v % 10); *s = 0; }
@@ -1714,7 +1798,7 @@ static void menu_value(int item, char *s)
                    s[p++] = ' '; s[p++] = 's'; s[p] = 0; return; }
     case MI_BL: put2(s, bl_idx + 1); return;
     case MI_LIGHT: src = light_name[light_idx]; break;
-    case MI_SCAN: src = "Start"; break;
+    case MI_SCAN: case MI_SPECTRUM: case MI_FDET: src = "Start"; break;
     }
     while ((*s++ = *src++)) { }
 }
@@ -1753,7 +1837,7 @@ static void menu_change(int item, int dir)
     case MI_TOT: tot_idx = clampi(tot_idx + dir, 0, (int)(sizeof tot_list / sizeof tot_list[0]) - 1); break;
     case MI_BL: bl_idx = clampi(bl_idx + dir, 0, 4); backlight(bl_list[bl_idx]); break;
     case MI_LIGHT: light_idx = clampi(light_idx + dir, 0, (int)sizeof light_list - 1); break;
-    case MI_SCAN: break;
+    case MI_SCAN: case MI_SPECTRUM: case MI_FDET: break;
     }
 }
 
@@ -1866,6 +1950,8 @@ static void menu_key(char k)
         if (k == K_UP) menu_select((menu_sel + MI_COUNT - 1) % MI_COUNT);
         else if (k == K_DOWN) menu_select((menu_sel + 1) % MI_COUNT);
         else if (k == K_MENU && menu_sel == MI_SCAN) { menu_close(); scan_start(); }
+        else if (k == K_MENU && menu_sel == MI_SPECTRUM) { menu_open = 0; menu_edit = 0; draw_home(); spectrum_start(); }
+        else if (k == K_MENU && menu_sel == MI_FDET) { menu_close(); fdet_start(); }
         else if (k == K_MENU) { menu_snapshot(); menu_edit = 1; menu_row(menu_sel); }
         else if (k == K_EXIT) menu_close();
         else for (int i = 0; i < MI_COUNT; i++) if (menu_key_of[i] == k) { menu_snapshot(); menu_edit = 1; menu_select(i); break; }
@@ -2273,6 +2359,8 @@ int main(void)
             } else if (key && !last_key && !tx_on && !tx_lockout) {
                 wake();
                 scan_stop();
+                if (spectrum_on) spectrum_stop();
+                if (fdet_on) fdet_stop();
                 if (menu_open) menu_close();
                 if (tx_start(alarm)) {
                     tx_until = ticks + (uint32_t)tot_list[tot_idx] * 1000u;
@@ -2293,6 +2381,8 @@ int main(void)
                 int was_dark = !lit;
                 wake();
                 if (scanning) { scan_stop(); pressed = 0; }
+                if (spectrum_on) { spectrum_stop(); pressed = 0; }
+                if (fdet_on) { fdet_stop(); show_status("RX", C_GREEN); pressed = 0; }
                 if (was_dark) pressed = 0;                     /* the first press only wakes the screen */
             }
             const uint16_t rep_keys = (1u << 1) | (1u << 2);   /* up, down repeat when held */
@@ -2355,7 +2445,7 @@ int main(void)
         }
 
         /* Squelch every 50 ms; side keys force it open. */
-        if (!tx_on && (int32_t)(ticks - next_sq) >= 0) {
+        if (!tx_on && !spectrum_on && !fdet_on && (int32_t)(ticks - next_sq) >= 0) {
             next_sq = ticks + 50;
             last_rssi = rssi_dbm();
             last_noise = bk_read(0, 0x65) & 0x7F;
@@ -2408,12 +2498,14 @@ int main(void)
             }
         }
 
-        if (!tx_on && (int32_t)(ticks - next_rssi) >= 0) {
+        if (!tx_on && !spectrum_on && (int32_t)(ticks - next_rssi) >= 0) {
             next_rssi = ticks + 300;
             show_rssi(last_rssi, last_noise);
         }
 
         if (scanning && !tx_on && !menu_open) scan_step();
+        if (spectrum_on && !tx_on) spectrum_sweep();
+        if (fdet_on && !tx_on) fdet_poll();
 
         if (lit && light_list[light_idx] && !tx_on && !audio_on && !menu_open &&
             (int32_t)(ticks - last_activity) >= (int32_t)light_list[light_idx] * 1000) {
