@@ -542,21 +542,23 @@ static const band_t bands[] = {
 };
 #define NBANDS (sizeof bands / sizeof bands[0])
 
-/* Transmit is allowed only inside these ranges (10 Hz units, [lo, hi)): the amateur
- * allocations of all three ITU regions that this chip can tune, plus PMR446. */
-static const struct { uint32_t lo, hi; } tx_ranges[] = {
-    {   1806800,   1816800 },   /* 17 m   18.068-18.168 */
-    {   2100000,   2145000 },   /* 15 m   21.000-21.450 */
-    {   2489000,   2499000 },   /* 12 m   24.890-24.990 */
-    {   2800000,   2970000 },   /* 10 m   28.000-29.700 */
-    {   4066000,   4070000 },   /* 8 m    40.660-40.700 (some Region 1 countries) */
-    {   5000000,   5400000 },   /* 6 m    50-54 */
-    {   6990000,   7050000 },   /* 4 m    69.9-70.5 (some Region 1 countries) */
-    {  14400000,  14800000 },   /* 2 m    144-148 */
-    {  21900000,  22500000 },   /* 1.25 m 219-225 (Region 2) */
-    {  42000000,  45000000 },   /* 70 cm  420-450 (includes PMR446) */
-    {  90200000,  92800000 },   /* 33 cm  902-928 (Region 2) */
-    { 124000000, 130000000 },   /* 23 cm  1240-1300 */
+/* Transmit is allowed only inside these ranges (10 Hz units, [lo, hi)): the amateur allocations of
+ * all three ITU regions that this chip can tune (all power levels), and marine VHF (capped at MID,
+ * meant as about 5 W; not measured). Air band and everything else: no transmit. */
+static const struct { uint32_t lo, hi; uint8_t maxpow; } tx_ranges[] = {
+    { 1806800, 1816800, 3 },   /* 17 m   18.068-18.168 */
+    { 2100000, 2145000, 3 },   /* 15 m   21.000-21.450 */
+    { 2489000, 2499000, 3 },   /* 12 m   24.890-24.990 */
+    { 2800000, 2970000, 3 },   /* 10 m   28.000-29.700 */
+    { 4066000, 4070000, 3 },   /* 8 m    40.660-40.700 (some Region 1 countries) */
+    { 5000000, 5400000, 3 },   /* 6 m    50-54 */
+    { 6990000, 7050000, 3 },   /* 4 m    69.9-70.5 (some Region 1 countries) */
+    { 14400000, 14800000, 3 },   /* 2 m    144-148 */
+    { 21900000, 22500000, 3 },   /* 1.25 m 219-225 (Region 2) */
+    { 42000000, 45000000, 3 },   /* 70 cm  420-450 (includes PMR446) */
+    { 90200000, 92800000, 3 },   /* 33 cm  902-928 (Region 2) */
+    { 124000000, 130000000, 3 },   /* 23 cm  1240-1300 */
+    {  15600000,  16202500, 2 },   /* marine VHF 156.000-162.025, MID at most */
 };
 /* Transmit power. MIN (the default): BK4819 PA level 8 with no external amplifier. LOW, MID, HIGH:
  * stock levels (0x80053F0 / 0x8004F0C) from this radio's calibration, with the band's amplifier on. */
@@ -596,7 +598,7 @@ static const pwr_cal_t pwr_cal[] = {
 };
 
 /* 0x36 value for the current power level at f; 0 means use TX_POWER_MIN without the amplifier. */
-static uint16_t power_reg(uint32_t f)
+static uint16_t power_reg(uint32_t f, int power)
 {
     if (power == PWR_MIN) return 0;
     for (unsigned i = 0; i < sizeof pwr_cal / sizeof pwr_cal[0]; i++) {
@@ -830,12 +832,14 @@ static int side_key(void)
     return SIDE_NONE;
 }
 
+/* Highest power level allowed at f plus one, or 0 if transmit is not allowed there. */
 static int tx_allowed(uint32_t f)
 {
     for (unsigned i = 0; i < sizeof tx_ranges / sizeof tx_ranges[0]; i++)
-        if (f >= tx_ranges[i].lo && f < tx_ranges[i].hi) return 1;
+        if (f >= tx_ranges[i].lo && f < tx_ranges[i].hi) return tx_ranges[i].maxpow + 1;
     return 0;
 }
+static int tx_power;                   /* level actually used for the current transmission */
 
 /* Voice TX (stock 0x8022270 PTT -> 0x801F828 / 0x8004518, then 0x800B22C -> 0x80053F0 /
  * 0x80052D4 with 0x30 = 0xC1FE), amateur bands only, minimum power, no external amplifier.
@@ -898,7 +902,9 @@ static void tx_audio(int burst)
 static int tx_start(int burst)
 {
     const band_t *b = band_of(freq10);
-    if (!b || !tx_allowed(freq10)) return 0;
+    int allow = tx_allowed(freq10);
+    if (!b || !allow) return 0;
+    tx_power = power < allow - 1 ? power : allow - 1;
     audio_close();
     gpio_bits_reset(GPIOA, GPIO_PINS_13);
     gpio_bits_set(GPIOA, GPIO_PINS_14);
@@ -924,7 +930,7 @@ static int tx_start(int burst)
     if (burst) tx_audio(1);
     gpio_bits_reset(GPIOC, GPIO_PINS_15);
     gpio_bits_reset(GPIOB, GPIO_PINS_11);
-    uint16_t p = power_reg(freq10);
+    uint16_t p = power_reg(freq10, tx_power);
     if (p) {
         /* Band amplifier (stock 0x8005354): 1 PC15; 2 PC15 + PB11; 3 0x33 bit 3; 4, 5 0x33 bit 2. */
         switch (b->tx_var) {
@@ -1301,7 +1307,7 @@ static void show_tx(void)
     static char s[20];
     int p = 0;
     s[p++] = 'T'; s[p++] = 'X'; s[p++] = ' ';
-    for (const char *n = power_name[power]; *n; n++) s[p++] = *n;
+    for (const char *n = power_name[tx_power]; *n; n++) s[p++] = *n;
     if (tx_burst) { s[p++] = ' '; s[p++] = '1'; s[p++] = '7'; s[p++] = '5'; s[p++] = '0'; }
     s[p] = 0;
     show_status(s, C_RED);
@@ -1905,7 +1911,7 @@ int main(void)
                     uart_puts(alarm ? "TX ON 1750\r\n" : "TX ON\r\n");
                 } else {
                     show_status("TX NOT ALLOWED", C_YELLOW);
-                    uart_puts("TX REFUSED outside the amateur bands\r\n");
+                    uart_puts("TX REFUSED outside the transmit bands\r\n");
                 }
             }
             if (!key) tx_lockout = 0;

@@ -30,7 +30,7 @@ If the radio is switched off while it is transmitting, the radio chip keeps its 
 
 ## Transmit limits in this firmware
 
-- Amateur bands only: the allocations of all three ITU regions that the radio chip can tune (17 m, 15 m, 12 m, 10 m, 8 m, 6 m, 4 m, 2 m, 1.25 m, 70 cm including PMR446, 33 cm, 23 cm; see `tx_ranges` in `firmware/src/main.c`). Transmit is refused on any other frequency. Whether the radio actually radiates on HF, 6 m, 4 m, 33 cm and 23 cm has not been tested.
+- Amateur bands only: the allocations of all three ITU regions that the radio chip can tune (17 m, 15 m, 12 m, 10 m, 8 m, 6 m, 4 m, 2 m, 1.25 m, 70 cm including PMR446, 33 cm, 23 cm; see `tx_ranges` in `firmware/src/main.c`). Also marine VHF, 156.000-162.025 MHz, capped at MID power (marine use normally needs a marine licence and type-approved equipment). Transmit is refused on any other frequency, including the air band. Whether the radio actually radiates on HF, 6 m, 4 m, 33 cm and 23 cm has not been tested.
 - Power: `MIN` by default (radio chip power level 8, register 0x36 = 0x20FF, no external amplifier). `POW LOW`, `POW MID` and `POW HIGH` use this radio's calibration tables with the band's amplifier switched on, as the stock firmware does.
 - 60-second time-out timer, then locked out until PTT1 and the alarm button are released. Watchdog on.
 - The radio starts on 145.500 MHz NFM.
