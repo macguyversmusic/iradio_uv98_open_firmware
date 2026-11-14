@@ -4,11 +4,11 @@ I got sick of people selling simple knowledge or "personalised" firmware.  open 
 
 Open firmware for the iRadio UV-98 Plus handheld (Radtel RT-880G family, FCC ID 2AZSA-6D880), written from scratch, plus the tools to flash it and control the radio from a computer over the programming cable, and a satellite tracker that tunes the radio to downlinks.
 
-**Status: experimental (test 28), run on one UV-98 Plus only.** The firmware reads the radio's own calibration (frequency correction, deviation, power levels) from its SPI flash, with our radio's values built into `firmware/src/main.c` as a fallback.
+**Status: experimental (test 38), run on one UV-98 Plus only.** The firmware reads the radio's own calibration (frequency correction, deviation, power levels) from its SPI flash, with our radio's values built into `firmware/src/main.c` as a fallback.
 
 ## Features
 
-Each feature says whether it has been tested on the radio, and with which test build. "Not tested yet" means no test on the radio has been recorded. Test 28 is on our radio now.
+Each feature says whether it has been tested on the radio, and with which test build. "Not tested yet" means no test on the radio has been recorded. Test 38 is on our radio now.
 
 ### Receiving
 
@@ -26,8 +26,8 @@ Each feature says whether it has been tested on the radio, and with which test b
   *Tested (tests 12-13).*
 - **Automatic gain control for USB and AM:** turns the receiver gain down on strong signals and back up when they go. On by default. Menu Audio, AGC, or `AGC ON` / `AGC OFF`.
   *Not tested yet on a real SSB signal.*
-- **Dual watch:** the radio's second receiver chip listens on the other VFO, shown on the small line under the main frequency. When it hears a signal while the main receiver is quiet, the main receiver listens there too and the line turns green; the top of the screen and transmit stay on the main VFO or channel. It comes back 2 seconds after the signal ends, or at once on any key, PTT or a serial command that changes something. On at start-up, also in channel mode. Menu Settings, Dual watch, or `DW ON` / `DW OFF`.
-  *Tested (tests 22-23): on 2 m it switches to a UV-5R signal and comes back 2 s after it ends; transmit stays on the main frequency. Known problem: the second receiver hears nothing on 70 cm (see [Known problems](#known-problems)).*
+- **Dual watch:** as stock's multi standby, the main receiver takes A and B in turn (250 ms each; the chip's squelch decides, 7 open readings in a row). Whichever opens is heard until it closes, then the turns resume after 2 seconds; no priority cut-ins. A key, PTT or a serial command that changes something returns to the active VFO at once. Works on every band. On at start-up; menu Settings, Dual watch, or `DW ON` / `DW OFF`. (The second radio chip is not used for receiving: stock only transmits with it.)
+  *Tested: 2 m with the earlier second-chip dual watch (test 22); the turn-taking switched to a UV-5R on 446.00625 and back over the cable (test 31). Not yet confirmed by ear on test 38.*
 - **Band scan:** in VFO mode, steps through the current band preset by the menu step, 200 ms per step as stock. A signal counts after 7 open squelch readings in a row; the scan then checks the steps up to 100 kHz either side and settles on the strongest, so a strong transmitter close by doesn't stop it on a neighbouring step. It carries on 2 seconds after the signal goes. Up and down during a scan set its direction; any other key or PTT stops it. Menu Scan, Scan, or `SCAN ON` (up) / `SCAN DOWN`.
   *Tested: starts and stops (test 21); stopped on 145.500 for a UV-5R at 1 W, scanning up from 145.400 and 145.450 (tests 26-27) and down from 145.550 (test 27).*
 - **Channel scan:** in channel mode, Scan steps through the used channels instead, skipping channels marked "scan remove" in CHIRP, each with its own receive tone. It stops on a signal (7 open squelch readings in a row), then checks your channels within 100 kHz of that one and settles on the strongest, so a strong transmitter close by doesn't stop it on a neighbouring channel. It carries on 2 seconds after the signal goes. Up and down during a scan set its direction; any other key or PTT stops it. Menu Scan, Scan, or `SCAN ON` / `SCAN DOWN`.
@@ -37,8 +37,8 @@ Each feature says whether it has been tested on the radio, and with which test b
 
 ### Transmitting
 
-- **Amateur bands of all three ITU regions:** PTT1 transmits voice on 17 m, 15 m, 12 m, 10 m, 8 m, 6 m, 4 m, 2 m, 1.25 m, 70 cm, 33 cm and 23 cm. Any other frequency is refused, including the air band. See [Transmit limits](#transmit-limits).
-  *Tested: 2 m and 70 cm, heard on a UV-5R (tests 8-11). Not tested yet: the other bands.*
+- **Transmit as stock:** PTT1 transmits anywhere in the radio's specified transmit ranges, 18-64 MHz and 136-520 MHz, at the power chosen. Everything else is receive only, including the air band, 4 m, 33 cm and 23 cm. See [Transmit limits](#transmit-limits).
+  *Tested: 2 m and 70 cm, heard on a UV-5R (tests 8-11, 22-23). Not yet tested: other frequencies.*
 - **Marine VHF, MID power at most:** 156.000-162.025 MHz.
   *Not tested yet.*
 - **CB, MID power at most:** 26.965-27.405 MHz (the 40 channels), narrow FM.
@@ -64,12 +64,12 @@ Each feature says whether it has been tested on the radio, and with which test b
 
 ### On the radio
 
-- **VFO A and VFO B:** two VFOs, each with its own frequency, mode, step, shift, offset and tones. The main one is at the top; the other is on a small line under the main frequency, receive only. A short press of `*` swaps them. Over the cable: `VFO A` / `VFO B`.
-  *Tested: switching over the cable (test 15), the `*` key by you (test 21).*
+- **VFO A and VFO B:** two VFOs, each with its own frequency, mode, step, shift, offset and tones. A is always the top row and B the bottom row, laid out the same: a big frequency, then a line with A or B, the power (L / M / H), the mode, the tone if one is on (CT 88.5 receive, T 88.5 transmit only, D023N DCS) and + / - for a shift. The active one (the one that transmits) is white, the other 60% white, and the one being received green. A short press of `*` changes which one is active; nothing moves. Over the cable: `VFO A` / `VFO B`.
+  *Tested: switching over the cable (test 15), the `*` key by you (test 21). The rows as described: test 38.*
 - **Menu in groups:** see [Using the radio](#using-the-radio).
   *Tested (test 28): Band and Power changed from the menu.*
-- **Tuning step:** 0.1, 1, 2.5, 5, 6.25, 10, 12.5, 25, 50 or 100 kHz, default 12.5 kHz. Menu RX/TX, Step.
-  *Not tested yet.*
+- **Tuning step:** 0.1, 1, 2.5, 5, 6.25, 10, 12.5, 25, 50 or 100 kHz. Typing a frequency (or `F` over the cable) sets the band's step: 1 kHz on 10 m and 6 m, 10 kHz on CB, 100 kHz on FM broadcast, 25 kHz on the air band, marine VHF and 23 cm, 12.5 kHz elsewhere; a band preset sets its own. Menu RX/TX, Step, to change it.
+  *Not tested yet (band steps new in test 38).*
 - **Backlight:** five brightness levels. Menu Settings, Backlight.
   *Not tested yet.*
 - **Backlight timeout:** turns the screen and keypad light off after 10, 20, 30 or 60 seconds without use, or never (the default). The first key press only wakes the screen. Menu Settings, Light off.
@@ -87,7 +87,7 @@ Each feature says whether it has been tested on the radio, and with which test b
 
 ### Channels
 
-- **Channel mode:** uses the channels already in the radio, as programmed by the stock software or CHIRP: frequency, split, mode, tones, power and name. A short press of `#` (the V/M key), or menu Memory, VFO / CH, switches between VFO and channel mode; menu Memory, Channel steps through the used channels. Up/down step through the used channels; type a channel number and `#` to jump to it. Over the cable: `CH 17`, `CHLIST`, `VFOMODE`.
+- **Channel mode:** both A and B on channels (each keeps its own channel; `*` changes which is active), using the channels already in the radio, as programmed by the stock software or CHIRP: frequency, split, mode, tones, power and name. A short press of `#` (the V/M key), or menu Memory, VFO / CH, switches between VFO and channel mode; menu Memory, Channel steps through the used channels. Up/down step through the used channels; type a channel number and `#` to jump to it. Over the cable: `CH 17`, `CHLIST`, `VFOMODE`.
   Channels marked "Only Rx" in CHIRP never transmit.
   *Tested: `CHLIST` (test 18); V/M on `#` (tests 21-22); up / down and a number + `#` (test 28).*
 - **Programming with CHIRP or the stock CPS:** the firmware answers the stock programming protocol, so CHIRP (model Radtel RT-880G) and iRadio's CPS can read and write the channels. After a write, the radio restarts.
@@ -180,7 +180,7 @@ Switch the radio on normally, then off **without pressing PTT** (see [Known prob
 
 ```sh
 .venv/bin/python tools/flash.py probe --model uv98                 # optional: connect only, erases nothing
-.venv/bin/python tools/flash.py flash --model uv98 --image bin/uv98plus_openfw_test28.bin --yes
+.venv/bin/python tools/flash.py flash --model uv98 --image bin/uv98plus_openfw_test38.bin --yes
 ```
 
 It takes about 30 seconds: 246 blocks of 1 KB, each acknowledged. When it prints `final reply 6`, switch the radio off and on normally. To go back to stock, flash `uv98plus_V1.16_250915.bin` the same way.
@@ -194,7 +194,7 @@ The flasher checks the image before sending it and writes only the application a
 | 0-9, then # | Type a frequency in kHz and tune to it (red bar clears the entry). In channel mode: go to that channel number |
 | # (nothing typed, V/M) | Switch between VFO mode and channel mode |
 | # held 1.5 s | Reverse: listen on the repeater input (or on a split channel's transmit frequency); hold again to swap back |
-| * | Swap VFO A and VFO B (each keeps its frequency, mode, step, shift, offset and tones). The main VFO is at the top; the other is on the small line under the main frequency, receive only. In channel mode it goes back to VFO mode first |
+| * | Make the other of A and B the active one (A stays on top, B below; only the brightness changes). In channel mode each keeps its own channel |
 | * held 1.5 s (lock symbol) | Lock or unlock the keys (PTT still works) |
 | Up / down | Tune by the step set in the menu (12.5 kHz by default); held, it repeats. In channel mode: next / previous used channel. During a scan: scan up / down |
 | Green bar | Open the menu |
@@ -262,12 +262,12 @@ In the program, choose Hamlib model 2 ("NET rigctl") at `localhost:4532`. It sup
 
 ## Transmit limits
 
-- **Allowed:** amateur bands of all three ITU regions that the radio chip can tune: 17 m, 15 m, 12 m, 10 m, 8 m, 6 m, 4 m, 2 m, 1.25 m, 70 cm, 33 cm and 23 cm. See `tx_ranges` in `firmware/src/main.c`.
+- **Allowed:** as stock, anywhere in the radio's specified transmit ranges, 18-64 MHz and 136-520 MHz. See `tx_ranges` in `firmware/src/main.c`.
 - **Marine VHF** 156.000-162.025 MHz, capped at MID power. Marine use normally needs a marine licence and type-approved equipment.
 - **CB** 26.965-27.405 MHz, capped at MID power, narrow FM.
 - **PMR446** 446.0-446.2 MHz, LOW power only.
 - **Channels marked "Only Rx"** never transmit.
-- **Everything else is refused,** including the air band. Whether the radio actually radiates on HF, CB, 6 m, 4 m, 33 cm and 23 cm has not been tested.
+- **Everything else is receive only,** including the air band (108-136 MHz) and everything above 520 MHz. Whether the radio actually radiates on HF and CB has not been tested.
 - **Power:** MID by default. LOW, MID and HIGH use the radio's calibration with the band's amplifier on, as stock does.
 - **Time-out timer:** 60 seconds by default (menu), then locked out until the key is released. Watchdog on.
 

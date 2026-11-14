@@ -27,6 +27,8 @@ with open(os.path.join(HERE, "config.json")) as _f:
     CONFIG = json.load(_f)
 SITE_NAME = CONFIG["name"]
 LAT, LON, ELEV = float(CONFIG["lat"]), float(CONFIG["lon"]), float(CONFIG.get("elev_m", 0))
+MIN_EL = float(CONFIG.get("min_elevation", 15))           # passes lower than this are not listed (page can change it)
+SQ_RESTORE = int(CONFIG.get("squelch_restore", 3))       # squelch after a pass if the radio cannot report its level
 TZ = CONFIG.get("timezone", "UTC")
 HOST, PORT = CONFIG.get("host", "127.0.0.1"), int(CONFIG.get("port", 8766))
 SERIAL_PORT = CONFIG.get("serial_port") or None
@@ -320,7 +322,7 @@ def passes_payload():
     out.sort(key=lambda r: (r["now"] is None, r["aos"] or 0))
     return {"site": {"name": SITE_NAME, "lat": LAT, "lon": LON, "elev": ELEV, "tz": TZ},
             "now": now_ms, "computed": int(computed * 1000), "window_min": WINDOW_MIN,
-            "predict_min": PREDICT_MIN,
+            "predict_min": PREDICT_MIN, "min_el": MIN_EL,
             "error": err, "fetched": {k: int(v * 1000) for k, v in state["fetched"].items()},
             "heard_count": len(smap), "unmatched": state.get("unmatched", []),
             "fetch_errors": dict(state["fetch_errors"]),
@@ -357,9 +359,19 @@ def doppler(sat_id, freq_hz):
     return int(round(f)), int(round(f - freq_hz))
 
 
+def squelch_restore(f):
+    """Put the squelch back if this pass opened it."""
+    if f and f.get("sq_open"):
+        try:
+            get_radio().set_squelch(f["sq_prev"])
+        except Exception:
+            pass
+
+
 def follower():
-    """While following, retune when the Doppler-corrected frequency has moved by 50 Hz (USB) or
-    500 Hz (FM, AM); stop when the satellite sets."""
+    """While following: wait for the pass to start if it has not; open the squelch for the pass if asked
+    (back to the previous level when the satellite sets or following stops); retune when the
+    Doppler-corrected frequency has moved by 50 Hz (USB) or 500 Hz (FM, AM)."""
     while True:
         time.sleep(1)
         with follow_lock:
@@ -367,10 +379,31 @@ def follower():
         if not f:
             continue
         s = sats.get(f["sat_id"])
-        if not s or look(s["sat"], ts.now())[0] <= 0:
+        el = look(s["sat"], ts.now())[0] if s else -90
+        if el > 0 and not f.get("seen_up"):
+            with follow_lock:
+                if follow["on"] and follow["on"]["sat_id"] == f["sat_id"]:
+                    follow["on"]["seen_up"] = True
+            f["seen_up"] = True
+        if not s or (el <= 0 and f.get("seen_up")):
+            squelch_restore(f)
             with follow_lock:
                 follow["on"], follow["ended"] = None, f"{f['label']}: satellite has set"
             continue
+        if el <= 0:
+            continue                       # the pass has not started: wait
+        if f.get("sq_armed") and not f.get("sq_open"):
+            try:
+                dev = get_radio()
+                prev = dev.get_squelch()
+                dev.set_squelch(0)
+                with follow_lock:
+                    if follow["on"] and follow["on"]["sat_id"] == f["sat_id"]:
+                        follow["on"].update(sq_open=True, sq_prev=SQ_RESTORE if prev is None else prev)
+            except Exception as e:
+                with follow_lock:
+                    if follow["on"]:
+                        follow["on"]["error"] = str(e)
         target, shift = doppler(f["sat_id"], f["freq_hz"])
         target += f["trim"]
         if abs(target - f["last_hz"]) < (50 if f["mode"] == "USB" else 500):
@@ -435,7 +468,8 @@ def follow_info():
     with follow_lock:
         on = follow["on"]
         info = {"label": on["label"], "doppler_hz": on["doppler_hz"], "trim_hz": on["trim"],
-                "error": on.get("error")} if on else {"ended": follow["ended"]}
+                "error": on.get("error"), "waiting": not on.get("seen_up", True),
+                "squelch_open": bool(on.get("sq_open")), "squelch_armed": bool(on.get("sq_armed"))} if on else {"ended": follow["ended"]}
     info["auto"] = auto["on"]
     info["dwell"] = auto["dwell"]
     return info
@@ -466,6 +500,11 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
         elif self.path == "/api/passes":
             self.send_json(passes_payload())
+        elif self.path == "/api/rssi":
+            try:
+                self.send_json({"connected": True, "rssi_dbm": get_radio().rssi()})
+            except Exception as e:
+                self.send_json({"connected": False, "error": str(e)})
         elif self.path == "/api/radio":
             try:
                 s = get_radio().get_status()
@@ -489,13 +528,18 @@ class Handler(BaseHTTPRequestHandler):
                 freq, shift = int(req["freq_hz"]), 0
                 if req.get("doppler", True) and req.get("sat_id"):
                     freq, shift = doppler(req["sat_id"], freq)
+                with follow_lock:
+                    old = dict(follow["on"]) if follow["on"] else None
+                squelch_restore(old)
                 s = dev.tune(freq, req["mode"])
                 auto["on"] = False
+                up = req.get("sat_id") in sats and look(sats[req["sat_id"]]["sat"], ts.now())[0] > 0
                 with follow_lock:
                     follow["ended"] = None
                     follow["on"] = {"sat_id": req["sat_id"], "freq_hz": int(req["freq_hz"]), "mode": req["mode"],
                                     "trim": 0, "last_hz": freq, "doppler_hz": shift,
-                                    "label": req.get("label") or str(req["sat_id"])} \
+                                    "label": req.get("label") or str(req["sat_id"]),
+                                    "seen_up": up, "sq_armed": bool(req.get("open_squelch")), "sq_open": False} \
                         if req.get("follow") and req.get("sat_id") else None
                 self.send_json({"ok": True, "status": s, "requested_hz": int(req["freq_hz"]),
                                 "tuned_hz": freq, "doppler_hz": shift, "follow": follow_info()})
@@ -510,7 +554,9 @@ class Handler(BaseHTTPRequestHandler):
             elif self.path == "/api/follow":
                 auto["on"] = False
                 with follow_lock:
+                    old = dict(follow["on"]) if follow["on"] else None
                     follow["on"], follow["ended"] = None, None
+                squelch_restore(old)
                 self.send_json({"ok": True, "follow": follow_info()})
             elif self.path == "/api/radio":
                 if "step_hz" in req:

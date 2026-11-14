@@ -38,6 +38,11 @@ select, input { min-height: 44px; padding: 4px 8px; border-radius: 8px; border: 
 input { width: 9em; }
 label { display: inline-flex; gap: 6px; align-items: center; }
 #announce { min-height: 1.5em; margin: 10px 0 0; font-weight: 600; }
+.smeter { display: flex; align-items: center; gap: 12px; margin: 0 0 10px; }
+.smeter .bar { flex: 1; max-width: 520px; height: 18px; border: 2px solid var(--line); border-radius: 6px; overflow: hidden; background: var(--bg); }
+.smeter .fill { height: 100%; width: 0; background: var(--now); transition: width .3s; }
+.smeter .fill.over { background: var(--warn); }
+.smeter .txt { font-variant-numeric: tabular-nums; min-width: 9em; }
 .layout { display: grid; grid-template-columns: 1fr; gap: 16px; }
 @media (min-width: 980px) { .layout { grid-template-columns: 360px 1fr; } .sky { position: sticky; top: 16px; align-self: start; } }
 .sky svg { width: 100%; height: auto; display: block; }
@@ -70,6 +75,10 @@ footer ul { padding-left: 1.2em; }
   <section class="panel" aria-labelledby="radio-h">
     <h2 id="radio-h">iRadio UV-98 Plus</h2>
     <p id="radio-status">Checking the radio…</p>
+    <div class="smeter" role="group" aria-label="Signal from the radio">
+      <div class="bar" aria-hidden="true"><div class="fill" id="sfill"></div></div>
+      <span class="txt" id="stext">signal …</span>
+    </div>
     <div class="row" role="group" aria-label="Radio controls">
       <button type="button" data-step="-1000">Tune down 1 kHz</button>
       <button type="button" data-step="1000">Tune up 1 kHz</button>
@@ -81,6 +90,7 @@ footer ul { padding-left: 1.2em; }
       <button type="button" id="unfollow" hidden>Stop following</button>
     </div>
     <label><input type="checkbox" id="follow" checked style="width:auto;min-height:0"> Follow Doppler during the pass (Tune buttons)</label>
+    <label><input type="checkbox" id="opensq" checked style="width:auto;min-height:0"> Open the squelch during the pass (Tune buttons; back to the previous level when it sets)</label>
     <div class="row" role="group" aria-label="Automatic stepping">
       <label><input type="checkbox" id="auto" style="width:auto;min-height:0"> Auto: step through the downlinks of the satellites in view</label>
       <label>every <select id="dwell"><option value="20">20 s</option><option value="30" selected>30 s</option><option value="60">60 s</option><option value="120">2 min</option></select></label>
@@ -96,6 +106,7 @@ footer ul { padding-left: 1.2em; }
 
   <div class="panel row" role="group" aria-label="Which passes to show">
     <label>Show passes <select id="window"><option value="60">now and in the next hour</option><option value="1440">now and in the next 24 hours</option></select></label>
+    <label>Highest at least <select id="minel"><option value="0">0°</option><option value="5">5°</option><option value="10">10°</option><option value="15" selected>15°</option><option value="20">20°</option><option value="30">30°</option><option value="45">45°</option></select></label>
     <label><input type="checkbox" id="tunable" style="width:auto;min-height:0"> Only satellites the iRadio can receive</label>
   </div>
 
@@ -129,7 +140,7 @@ const DIRS = ['N','NNE','NE','ENE','E','ESE','SE','SSE','S','SSW','SW','WSW','W'
 const $ = s => document.querySelector(s);
 let data = null, offset = 0, busy = false;
 
-const compass = az => `${DIRS[Math.round(az / 22.5) % 16]} ${Math.round(az)}°`;
+const compass = az => DIRS[Math.round(az / 22.5) % 16];
 const t = ms => hm.format(new Date(ms));
 const nowMs = () => Date.now() + offset;
 function mins(ms) { const m = Math.round((ms - nowMs()) / 60000); return m <= 0 ? 'now' : m < 60 ? `in ${m} min` : `in ${Math.floor(m / 60)} h ${m % 60} min`; }
@@ -166,7 +177,8 @@ function showFollow(f) {
   const on = f && f.label;
   $('#unfollow').hidden = !on;
   $('#follow-status').textContent = on
-    ? `Following ${f.label}: Doppler ${f.doppler_hz > 0 ? '+' : ''}${f.doppler_hz} Hz${f.trim_hz ? `, trim ${f.trim_hz > 0 ? '+' : ''}${f.trim_hz} Hz` : ''}${f.error ? ` (problem: ${f.error})` : ''}.`
+    ? (f.waiting ? `${f.label}: waiting for the pass to start${f.squelch_armed ? '; the squelch opens when it does' : ''}.`
+      : `Following ${f.label}: Doppler ${f.doppler_hz > 0 ? '+' : ''}${f.doppler_hz} Hz${f.trim_hz ? `, trim ${f.trim_hz > 0 ? '+' : ''}${f.trim_hz} Hz` : ''}${f.squelch_open ? ', squelch open' : ''}${f.error ? ` (problem: ${f.error})` : ''}.`)
     : (f && f.ended ? `Stopped following: ${f.ended}.` : '');
 }
 
@@ -210,9 +222,9 @@ $('#manual').addEventListener('submit', e => {
 
 function filtered() {
   if (!data) return [];
-  const win = +$('#window').value, only = $('#tunable').checked, end = nowMs() + win * 60000;
+  const win = +$('#window').value, only = $('#tunable').checked, end = nowMs() + win * 60000, minel = +$('#minel').value;
   return data.passes.filter(p => (p.los == null || p.los > nowMs()) && (p.aos == null || p.aos <= end) &&
-    (!only || p.transmitters.some(x => x.rig)));
+    (p.max_el == null || p.max_el >= minel) && (!only || p.transmitters.some(x => x.rig)));
 }
 const key = p => `${p.sat_id}-${p.aos ?? 'up'}`;
 const isUp = p => (p.aos == null || p.aos <= nowMs()) && (p.los == null || p.los > nowMs());
@@ -229,23 +241,32 @@ function geoText(p) {
   if (p.los) parts.push(`sets ${t(p.los)} at ${compass(p.los_az)}`);
   return parts.join(' · ') + '.';
 }
-const nowText = p => p.now ? `Now: elevation ${Math.round(p.now.el)}°, azimuth ${compass(p.now.az)}, ${p.now.range_km} km away.` : '';
+const nowText = p => p.now ? `Now: elevation ${Math.round(p.now.el)}°, ${compass(p.now.az)}, ${p.now.range_km} km away.` : '';
 
-function txRow(p, x) {
-  const desc = x.description || x.mode || 'Transmitter';
-  const mode = [x.mode, x.baud ? `${x.baud} bd` : null].filter(Boolean).join(' ');
-  const up = x.uplink_low ? `${range(x.uplink_low, x.uplink_high)}${x.uplink_mode ? ' ' + x.uplink_mode : ''}${x.invert ? ' (inverting)' : ''}` : '—';
-  let cell;
-  if (x.rig) {
-    const label = `${mhz(x.rig.freq_hz)} MHz ${x.rig.mode}`;
-    cell = el('button', { type: 'button', class: 'tune', 'aria-label': `Tune the iRadio to ${p.display}, ${desc}, ${label}` }, `Tune ${label}`);
-    cell.addEventListener('click', () => run(cell, '/api/tune', { freq_hz: x.rig.freq_hz, mode: x.rig.mode, sat_id: p.sat_id, follow: $('#follow').checked, label: `${p.display} ${desc}` }, r => { showFollow(r.follow); return tuned(r, `${p.display} ${desc}`); }));
-  } else cell = 'out of range';
-  return el('tr', {}, el('th', { scope: 'row' }, desc),
-    el('td', { class: 'num', 'data-label': 'Downlink' }, range(x.downlink_low, x.downlink_high)),
-    el('td', { class: 'num', 'data-label': 'Uplink' }, up),
-    el('td', { 'data-label': 'Mode' }, mode || '—'),
-    el('td', { 'data-label': 'iRadio' }, cell));
+function txRows(p) {
+  const groups = new Map();
+  for (const x of p.transmitters) {
+    if (!x.rig) continue;
+    const k = `${x.rig.freq_hz}-${x.rig.mode}`;
+    if (!groups.has(k)) groups.set(k, { rig: x.rig, names: [], modes: [], up: null, low: x.downlink_low, high: x.downlink_high });
+    const g = groups.get(k);
+    const d = x.description || x.mode || 'Transmitter';
+    if (!g.names.includes(d)) g.names.push(d);
+    const m = [x.mode, x.baud ? `${x.baud} bd` : null].filter(Boolean).join(' ');
+    if (m && !g.modes.includes(m)) g.modes.push(m);
+    if (!g.up && x.uplink_low) g.up = `${range(x.uplink_low, x.uplink_high)}${x.uplink_mode ? ' ' + x.uplink_mode : ''}${x.invert ? ' (inverting)' : ''}`;
+  }
+  return [...groups.values()].map(g => {
+    const desc = g.names.join(' / ');
+    const label = `${mhz(g.rig.freq_hz)} MHz ${g.rig.mode}`;
+    const cell = el('button', { type: 'button', class: 'tune', 'aria-label': `Tune the iRadio to ${p.display}, ${desc}, ${label}` }, `Tune ${label}`);
+    cell.addEventListener('click', () => run(cell, '/api/tune', { freq_hz: g.rig.freq_hz, mode: g.rig.mode, sat_id: p.sat_id, follow: $('#follow').checked, open_squelch: $('#opensq').checked, label: `${p.display} ${desc}` }, r => { showFollow(r.follow); return tuned(r, `${p.display} ${desc}`); }));
+    return el('tr', {}, el('th', { scope: 'row' }, desc),
+      el('td', { class: 'num', 'data-label': 'Downlink' }, range(g.low, g.high)),
+      el('td', { class: 'num', 'data-label': 'Uplink' }, g.up || '—'),
+      el('td', { 'data-label': 'Mode' }, g.modes.join(', ') || '—'),
+      el('td', { 'data-label': 'iRadio' }, cell));
+  });
 }
 
 function buildPass(p) {
@@ -257,10 +278,10 @@ function buildPass(p) {
     el('h3', { id }, el('span', { class: 'name' }, p.display), ', ', el('span', { class: 'when' }, whenText(p))),
     el('p', { class: 'geo' }, geoText(p), ' ', el('span', { class: 'nowpos' }, nowText(p))),
     el('p', { class: 'meta' }, [heard, `NORAD ${p.norad}`].filter(Boolean).join(' · ') + other + ' · ', age),
-    p.transmitters.length ? el('div', { class: 'tablewrap' }, el('table', {},
-      el('caption', { class: 'vh' }, `${p.display} transmitters`),
+    p.transmitters.some(x => x.rig) ? el('div', { class: 'tablewrap' }, el('table', {},
+      el('caption', { class: 'vh' }, `${p.display} downlinks`),
       el('thead', {}, el('tr', {}, ...['Transmitter', 'Downlink', 'Uplink', 'Mode', 'iRadio'].map(h => el('th', { scope: 'col' }, h)))),
-      el('tbody', {}, ...p.transmitters.map(x => txRow(p, x))))) : el('p', { class: 'meta' }, 'SatNOGS lists no active transmitters for this satellite.'));
+      el('tbody', {}, ...txRows(p)))) : el('p', { class: 'meta' }, 'No downlink this radio can receive.'));
 }
 
 function render() {
@@ -316,6 +337,7 @@ async function loadPasses() {
   try {
     const d = await api('/api/passes');
     offset = d.now - Date.now();
+    if (!data && d.min_el != null) { const o = [...$('#minel').options].find(o => +o.value === d.min_el); if (o) $('#minel').value = o.value; }
     data = d;
     if (d.site && d.site.tz && d.site.tz !== TZ) {
       TZ = d.site.tz;
@@ -334,6 +356,22 @@ async function loadPasses() {
 
 $('#window').addEventListener('change', render);
 $('#tunable').addEventListener('change', render);
+$('#minel').addEventListener('change', render);
+
+/* Signal from the radio over USB: IARU S-meter, S9 = -93 dBm above 30 MHz, 6 dB per S-unit, to S9+40. */
+async function pollRssi() {
+  try {
+    const r = await api('/api/rssi');
+    if (!r.connected) { $('#stext').textContent = 'signal: radio not connected'; $('#sfill').style.width = '0'; return; }
+    const d = r.rssi_dbm, rel = d + 147;                 /* dB above S0 */
+    const pct = Math.max(0, Math.min(100, rel / 94 * 100));
+    const su = rel < 54 ? `S${Math.max(0, Math.floor(rel / 6))}` : `S9+${Math.floor((rel - 54) / 10) * 10}`;
+    $('#sfill').style.width = pct + '%';
+    $('#sfill').classList.toggle('over', rel >= 54);
+    $('#stext').textContent = `${su}  ${d} dBm`;
+  } catch (e) { $('#stext').textContent = 'signal: page server not answering'; }
+}
+setInterval(pollRssi, 500);
 loadPasses(); pollRadio();
 setInterval(loadPasses, 30000);
 setInterval(pollRadio, 1500);

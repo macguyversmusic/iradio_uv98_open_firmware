@@ -6,7 +6,7 @@
 #include <stddef.h>
 #include "fonts_aa.h"
 
-#define FW_NAME  "UV98+ open test 28"
+#define FW_NAME  "UV98+ open test 38"
 #define APP_BASE 0x08002800u
 
 static void report_freq(void);
@@ -14,6 +14,13 @@ static void squelch_setup(void);
 static void show_vfo2(void);
 static void chan_leave(void);
 static int chan_apply(int n);
+static void show_rows(void);
+#define CH_BASE 0x4000u
+#define CH_SIZE 0x30u
+#define CH_COUNT 1024
+static int chan_read(int n, uint8_t *c);
+static void tone_from_chan(uint16_t v, int *type, uint16_t *val);
+static int chan_of[2];                 /* channel mode: each VFO's own channel (A, B) */
 static int chan_next_scan(int n, int dir);
 
 /* ---------------- timing ---------------- */
@@ -670,25 +677,15 @@ static uint16_t cal_dev(uint32_t f, int narrow)
     return i >= 0 ? le16(cal_blk[cal_map[i].blk] + (narrow ? 10 : 3)) : 0x34E2;
 }
 
-/* Transmit is allowed only inside these ranges (10 Hz units, [lo, hi), first match), each with its
- * highest power level: the amateur allocations of all three ITU regions that this chip can tune,
- * CB and marine VHF at MID at most, PMR446 at LOW. Air band and everything else: no transmit. */
+/* Transmit as stock: anywhere in the radio's specified transmit ranges, 18-64 and 136-520 MHz (so not
+ * on the air band, 108-136, nor above 520 MHz), at the power chosen, except CB and marine VHF at MID at
+ * most and PMR446 at LOW. 10 Hz units, [lo, hi), first match. Everything else: receive only. */
 static const struct { uint32_t lo, hi; uint8_t maxpow; } tx_ranges[] = {
-    { 1806800, 1816800, 3 },   /* 17 m   18.068-18.168 */
-    { 2100000, 2145000, 3 },   /* 15 m   21.000-21.450 */
-    { 2489000, 2499000, 3 },   /* 12 m   24.890-24.990 */
-    { 2696500, 2740501, 2 },   /* CB     26.965-27.405 (40 channels), MID at most */
-    { 2800000, 2970000, 3 },   /* 10 m   28.000-29.700 */
-    { 4066000, 4070000, 3 },   /* 8 m    40.660-40.700 (some Region 1 countries) */
-    { 5000000, 5400000, 3 },   /* 6 m    50-54 */
-    { 6990000, 7050000, 3 },   /* 4 m    69.9-70.5 (some Region 1 countries) */
-    { 14400000, 14800000, 3 },   /* 2 m    144-148 */
+    {  2696500,  2740501, 2 },   /* CB     26.965-27.405 (40 channels), MID at most */
     { 15600000, 16202500, 2 },   /* marine VHF 156.000-162.025, MID at most */
-    { 21900000, 22500000, 3 },   /* 1.25 m 219-225 (Region 2) */
-    { 44600000, 44620000, 1 },   /* PMR446 446.0-446.2, LOW only (before 70 cm) */
-    { 42000000, 45000000, 3 },   /* 70 cm  420-450 */
-    { 90200000, 92800000, 3 },   /* 33 cm  902-928 (Region 2) */
-    { 124000000, 130000000, 3 },   /* 23 cm  1240-1300 */
+    { 44600000, 44620000, 1 },   /* PMR446 446.0-446.2, LOW only */
+    {  1800000,  6400000, 3 },   /* 18-64 MHz */
+    { 13600000, 52000000, 3 },   /* 136-520 MHz */
 };
 /* Transmit power LOW, MID (the default), HIGH: stock levels (0x80053F0 / 0x8004F0C) from this radio's
  * calibration, with the band's amplifier on. Numbered 1-3 (saved settings, channel power, band caps). */
@@ -767,11 +764,13 @@ static int bl_idx = 4;
 /* Backlight timeout (menu "Light off"); the keypad light (PA9) follows the backlight. */
 static const uint8_t light_list[] = { 0, 10, 20, 30, 60 };          /* seconds, 0 = always on */
 static const char *const light_name[] = { "ALWAYS", "10 s", "20 s", "30 s", "60 s" };
-static int light_idx = 0, lit = 1, locked, scanning, fdet_on, dw_on, dw_hop, dw_wait_clear, dw_saved_power;
-static uint32_t dw_next, dw_quiet_since, dw_freq;
+static int light_idx = 0, lit = 1, locked, scanning, fdet_on, dw_on, dw_hop, dw_saved_power;
+static uint32_t dw_next, dw_freq, dw_main_freq;
 static uint32_t fdet_next, fdet_until;
 static uint32_t last_activity, scan_next, scan_hold_until, scan_poll_next;
 static int scan_hits, scan_found;     /* scan: consecutive open squelch reads on this step; 7 = a signal */
+static uint32_t rssi_hold_until;       /* after a dual-watch retune: RSSI not valid yet */
+static int meter_dbm = -160;
 static int scan_peaked;               /* band scan: the peak search has run for this signal */
 static int scan_dir = 1;              /* scan direction: 1 up, -1 down (up / down keys during a scan) */
 
@@ -1275,10 +1274,10 @@ static int tone_text(char *s) { return tone_text_of(tone_type, tone_val, s); }
 static int menu_open;                 /* while the menu is shown, home-screen drawing waits */
 static int vfo_cur;                   /* 0 = VFO A, 1 = VFO B */
 static const char *const step_name[] = { "100 Hz", "1 kHz", "2.5 kHz", "5 kHz", "6.25 kHz", "10 kHz", "12.5 kHz", "25 kHz", "50 kHz", "100 kHz" };
-#define Y_FREQ    42
-#define Y_VFO2    98       /* the other VFO, small, under the main frequency */
-#define Y_CHIPS1  120
-#define Y_CHIPS2  153
+#define Y_FREQ    35       /* the main VFO (or channel): big frequency */
+#define Y_LINE1   90       /* its readouts, one small line */
+#define Y_FREQ2   111      /* the other VFO: big frequency */
+#define Y_LINE2   165      /* its readouts */
 #define Y_SEP1    186
 #define Y_STATUS  189
 #define STATUS_H  38
@@ -1314,34 +1313,28 @@ static const rxband_t rxbands[] = {
 static uint32_t band_freq[NRXBANDS];
 static int band_last = 3;
 
+/* The step for a band: 1 kHz on 10 m and 6 m, 10 kHz on CB, 100 kHz on FM broadcast, 25 kHz on the air
+ * band, marine VHF and 23 cm, 12.5 kHz elsewhere (index into step_list). */
+static int step_for(uint32_t f)
+{
+    if (f >= 2696500 && f < 2740501) return 5;
+    if ((f >= 2800000 && f < 2970000) || (f >= 5000000 && f < 5400000)) return 1;
+    if (f >= 6400000 && f < 10800000) return 9;
+    if ((f >= 10800000 && f < 13700000) || (f >= 15600000 && f < 16300000) || (f >= 124000000 && f < 130000000)) return 7;
+    return 6;
+}
+
 static int rxband_of(uint32_t f)
 {
     for (int i = 0; i < NRXBANDS; i++) if (f >= rxbands[i].lo && f <= rxbands[i].hi) return i;
     return -1;
 }
 
+/* Top bar, left: empty (each row shows its VFO or channel). */
 static void top_label(void)
 {
     if (menu_open) return;
-    int b = rxband_of(freq10);
-    char s[24] = { vfo_cur ? 'B' : 'A', ' ', ' ' };
-    int k = 3;
-    if (chan_mode) {
-        k = 0;
-        int n = chan_num + 1;
-        if (n >= 1000) s[k++] = (char)('0' + n / 1000);
-        if (n >= 100) s[k++] = (char)('0' + n / 100 % 10);
-        if (n >= 10) s[k++] = (char)('0' + n / 10 % 10);
-        s[k++] = (char)('0' + n % 10);
-        s[k++] = ' ';
-        for (const char *q = chan_name; *q && k < 20; q++) s[k++] = *q;
-    } else {
-        for (const char *q = b >= 0 ? rxbands[b].name : "VFO"; *q; q++) s[k++] = *q;
-    }
-    s[k] = 0;
-    while (k > 4 && aa_width(F_SMALL, s) > 136) s[--k] = 0;
     lcd_fill(0, 4, 146, 26, P->bar);
-    aa_text(10, (34 - F_SMALL->height) / 2, F_SMALL, s, P->light, P->bar);
 }
 
 static void top_bar(void)
@@ -1374,48 +1367,46 @@ static void show_batt(void)
 /* A row of rounded labels, centred. */
 #define CHIP_PAD 8
 #define CHIP_GAP 8
-static void chip_row(int y, const char *const *txt, const uint16_t *bg, int n)
+/* The line under each row's big frequency, the same for both rows: A or B, power (L / M / H), the mode
+ * (FM, NFM, AM, USB), the tone if one is on (CT 88.5 receive, T 88.5 transmit only, D023N DCS), + / - for
+ * a repeater shift; on the right the channel's name in channel mode. */
+static void band_line(int y, const char *tag, uint16_t bg, int md, int sft, int tt, int rt, uint16_t tv, uint16_t rv,
+                      const char *pw, const char *pos, uint16_t col)
 {
-    int total = 0;
-    for (int k = 0; k < n; k++) total += aa_width(F_SMALL, txt[k]) + 2 * CHIP_PAD + (k ? CHIP_GAP : 0);
-    lcd_fill(0, y, LCD_W, CHIP_H, C_BLACK);
-    int x = (LCD_W - total) / 2;
-    for (int k = 0; k < n; k++) {
-        int w = aa_width(F_SMALL, txt[k]) + 2 * CHIP_PAD;
-        fill_rrect(x, y, w, CHIP_H, bg[k]);
-        aa_text(x + CHIP_PAD, y + (CHIP_H - F_SMALL->height) / 2, F_SMALL, txt[k], P->chip_text, bg[k]);
-        x += w + CHIP_GAP;
+    char s[32], tone[16], tx[12];
+    int p = 0, tn = 0;
+    if (rt != TONE_OFF && tone_text_of(rt, rv, tx)) {                 /* receive tone: CT 88.5, D023N */
+        if (rt == TONE_CTCSS) { tone[tn++] = 'C'; tone[tn++] = 'T'; tone[tn++] = ' '; }
+        for (const char *q = tx; *q && tn < 14; q++) tone[tn++] = *q;
+    } else if (tt != TONE_OFF && tone_text_of(tt, tv, tx)) {          /* transmit tone only: T 88.5, D023N */
+        if (tt == TONE_CTCSS) { tone[tn++] = 'T'; tone[tn++] = ' '; }
+        for (const char *q = tx; *q && tn < 14; q++) tone[tn++] = *q;
     }
-}
-
-/* "TX 88.5", "RX D023N" */
-static int tone_chip_text(char *s, const char *pre, int type, uint16_t val)
-{
-    char t[12];
-    if (!tone_text_of(type, val, t)) return 0;
-    int p = 0;
-    for (; *pre; pre++) s[p++] = *pre;
-    for (const char *q = t[0] == 'T' ? t + 1 : t; *q; q++) s[p++] = *q;
+    tone[tn] = 0;
+    const char *it[4] = { pw, mode_name[md % NMODES], tone, sft > 0 ? "+" : sft < 0 ? "-" : "" };
+    for (int k = 0; k < 4; k++) {
+        const char *q = it[k];
+        if (!q || !*q) continue;
+        if (p) { s[p++] = ' '; s[p++] = ' '; }
+        while (*q && p < 28) s[p++] = *q++;
+    }
     s[p] = 0;
-    return 1;
+    int h = F_SMALL->height;
+    lcd_fill(0, y, LCD_W, h, bg);
+    int xr = aa_text(6, y, F_SMALL, tag, col, bg) + 12;
+    xr = aa_text(xr, y, F_SMALL, s, col, bg) + 12;
+    char r[20];
+    int n = 0;
+    for (const char *q = pos; *q && n < 18; q++) r[n++] = *q;
+    r[n] = 0;
+    while (n > 1 && LCD_W - 6 - aa_width(F_SMALL, r) < xr) r[--n] = 0;
+    aa_text(LCD_W - 6 - aa_width(F_SMALL, r), y, F_SMALL, r, col, bg);
 }
 
+/* The readouts changed: redraw the rows. */
 static void show_chips(void)
 {
-    if (menu_open) return;
-    char mic[8] = "MIC ", tx[16], rx[16];
-    mic[4] = (char)('0' + mic_gain / 10); mic[5] = (char)('0' + mic_gain % 10); mic[6] = 0;
-    char sh[8];
-    if (shift) { sh[0] = shift > 0 ? '+' : '-'; int k = 1; for (const char *q = ofs_name[ofs_idx]; *q; q++) sh[k++] = *q; sh[k] = 0; }
-    const char *r1[3] = { mode_name[mode], power_name[power], shift ? sh : mic };
-    const uint16_t c1[3] = { P->mode, P->pw[power], shift ? RGB(255, 190, 0) : P->mic };
-    chip_row(Y_CHIPS1, r1, c1, 3);
-    const char *r2[2];
-    uint16_t c2[2];
-    int n = 0;
-    if (tone_chip_text(tx, "TX ", tone_type, tone_val)) { r2[n] = tx; c2[n++] = P->txt; }
-    if (tone_chip_text(rx, "RX ", rx_tone_type, rx_tone_val)) { r2[n] = rx; c2[n++] = P->rxt; }
-    chip_row(Y_CHIPS2, r2, c2, n);
+    show_rows();
 }
 
 static void show_info(void)
@@ -1432,11 +1423,10 @@ static void show_info(void)
 }
 
 /* "446.006" large, "25" smaller on the same baseline, centred. */
-static void show_freq(void)
+static void draw_freq_big(int y, uint32_t f, uint16_t col_big, uint16_t col_small, uint16_t bg)
 {
-    if (menu_open) return;
     char s[16], big[12], small[4];
-    fmt_freq(s, freq10);
+    fmt_freq(s, f);
     int dot = 0;
     while (s[dot] && s[dot] != '.') dot++;
     int i = 0;
@@ -1447,23 +1437,26 @@ static void show_freq(void)
     small[j] = 0;
     int wb = aa_width(&font_big, big), ws = aa_width(F_MED, small) + 4;
     if (wb + ws > LCD_W - 8) ws = 0;
-    int bi = rxband_of(freq10);
-    if (bi >= 0) { band_freq[bi] = freq10; band_last = bi; }
-    top_label();
     int x0 = (LCD_W - wb - ws) / 2;
-    lcd_fill(0, Y_FREQ, x0, font_big.height, C_BLACK);
-    int x = aa_text(x0, Y_FREQ, &font_big, big, C_WHITE, C_BLACK);
+    lcd_fill(0, y, x0, font_big.height, bg);
+    int x = aa_text(x0, y, &font_big, big, col_big, bg);
     if (ws) {
-        int ys = Y_FREQ + font_big.baseline - F_MED->baseline;
-        lcd_fill(x, Y_FREQ, 4, font_big.height, C_BLACK);
-        lcd_fill(x + 4, Y_FREQ, ws - 4, ys - Y_FREQ, C_BLACK);
-        x = aa_text(x + 4, ys, F_MED, small, P->light, C_BLACK);
-        if (ys + F_MED->height < Y_FREQ + font_big.height)
-            lcd_fill(x0 + wb, ys + F_MED->height, ws, Y_FREQ + font_big.height - ys - F_MED->height, C_BLACK);
+        int ys = y + font_big.baseline - F_MED->baseline;
+        lcd_fill(x, y, 4, font_big.height, bg);
+        lcd_fill(x + 4, y, ws - 4, ys - y, bg);
+        x = aa_text(x + 4, ys, F_MED, small, col_small, bg);
+        if (ys + F_MED->height < y + font_big.height)
+            lcd_fill(x0 + wb, ys + F_MED->height, ws, y + font_big.height - ys - F_MED->height, bg);
     }
-    if (x < LCD_W) lcd_fill(x, Y_FREQ, LCD_W - x, font_big.height, C_BLACK);
-    show_chips();
-    show_vfo2();
+    if (x < LCD_W) lcd_fill(x, y, LCD_W - x, font_big.height, bg);
+}
+
+static void show_freq(void)
+{
+    if (menu_open) return;
+    if (!dw_hop) { int bi = rxband_of(freq10); if (bi >= 0) { band_freq[bi] = freq10; band_last = bi; } }
+    top_label();
+    show_rows();
 }
 
 /* Signal meter at the bottom: 20 segments, 12 up to S9 (4.5 dB each), 8 above S9 (5 dB each, to
@@ -1611,10 +1604,10 @@ static void draw_home(void)
 {
     /* Clear only the bands between sections; each section paints its own area. */
     clear_band(34, Y_FREQ);
-    clear_band(Y_FREQ + font_big.height, Y_VFO2);
-    clear_band(Y_VFO2 + F_SMALL->height, Y_CHIPS1);
-    clear_band(Y_CHIPS1 + CHIP_H, Y_CHIPS2);
-    clear_band(Y_CHIPS2 + CHIP_H, Y_STATUS);
+    clear_band(Y_FREQ + font_big.height, Y_LINE1);
+    clear_band(Y_LINE1 + F_SMALL->height, Y_FREQ2);
+    clear_band(Y_FREQ2 + font_big.height, Y_LINE2);
+    clear_band(Y_LINE2 + F_SMALL->height, Y_STATUS);
     lcd_fill(0, Y_STATUS, 8, STATUS_H, C_BLACK);
     lcd_fill(LCD_W - 8, Y_STATUS, 8, STATUS_H, C_BLACK);
     lcd_fill(8, Y_STATUS, LCD_W - 16, 4, C_BLACK);
@@ -1858,118 +1851,174 @@ static void fdet_poll(void)
     }
 }
 
-/* ---------------- dual watch (radio chip 2) ---------------- */
-/* Chip 2 listens on the other VFO, shown on the small line under the main frequency (init as stock 0x8003D34, tuning as
- * 0x8003CCC, receive filter 0x33 bit 4 as 0x8003F30). When it hears a signal while chip 1 is quiet, chip 1
- * listens there too so the signal is heard; the top of the screen and transmit stay on the main VFO or
- * channel. Chip 1 comes back 2 s after the signal ends, or at once on a key, PTT or a serial command that
- * changes something. It does not switch again until that signal has gone. */
-static void dw_tune(uint32_t f)
+/* ---------------- dual watch ---------------- */
+/* Dual watch as stock's multi standby (0x80237F8): the main radio chip takes the VFOs in turn (stock
+ * never receives on chip 2; it uses chip 2 only to transmit, 0x8003F58). Each gets 250 ms; the chip's
+ * squelch is read every 2 ms, and 7 open reads in a row hold that VFO until the audio opens (the chip
+ * needs about 150 ms after a retune). An open channel keeps chip 1 there; turns resume 2 s after it
+ * closes, or 2 s after a key, PTT or a serial command that changes something (those go to the main VFO
+ * at once). The top of the screen and transmit stay on the main VFO or channel; the small line turns
+ * green while the other VFO is heard. Chip 2 sleeps, PA bias off. */
+static void dw_chip2_sleep(void)
 {
-    const band_t *b = band_of(f);
-    if (!b) return;
-    uint32_t v = f + cal_word(f, b->cal) - 0x8000u;
-    bk_write(1, 0x38, (uint16_t)(v & 0xFFFF));
-    bk_write(1, 0x39, (uint16_t)(v >> 16));
-    bk_write(1, 0x37, 0x1F0F);
-    delay_ms(10);
-    bk_write(1, 0x30, 0x0200);
-    bk_write(1, 0x30, 0xBFF1);
-    dw_freq = f;
+    bk_write(1, 0x36, 0x0000);
+    bk_write(1, 0x30, 0x0000);
+    bk_write(1, 0x37, 0x1D00);
 }
+
+static uint32_t dw_hold_until, dw_poll_next;
+static int dw_hits, dw_found, dw_heard;   /* dw_heard: the audio opened on the other VFO */
 
 static void dw_start(void)
 {
-    static const uint8_t r[] = { 0x13, 0x12, 0x11, 0x10, 0x14, 0x49, 0x7B, 0x33, 0x34, 0x35, 0x1E, 0x1F, 0x3E, 0x7D, 0x26 };
-    static const uint16_t v[] = { 0x03BE, 0x037B, 0x027B, 0x007A, 0x0019, 0x2A38, 0x8420, 0, 0, 0, 0x4C58, 0xA656, 0xA037, 0xE950, 0x13A0 };
-    bk_write(1, 0x00, 0x8000);
-    delay_ms(10);
-    bk_write(1, 0x00, 0x0000);
-    bk_write(1, 0x37, 0x1D0F);
-    for (unsigned i = 0; i < sizeof r; i++) bk_write(1, r[i], v[i]);
-    if (cal_ok) {
-        bk_write(1, 0x54, af300[cal_hdr[10]][0]); bk_write(1, 0x55, af300[cal_hdr[10]][1]);
-        bk_write(1, 0x75, af3k[cal_hdr[11]]);
-    }
-    bk_write(1, 0x43, 0x4048);
-    bk_write(1, 0x47, 0x6040);
-    bk_write(1, 0x33, 0x0010);
-    dw_hop = 0;
-    dw_wait_clear = 0;
+    dw_chip2_sleep();
+    dw_hop = dw_heard = dw_hits = dw_found = 0;
     dw_on = 1;
-    dw_tune(vfos[vfo_cur ^ 1].freq);
-    dw_next = ticks + 200;
+    dw_freq = vfos[vfo_cur ^ 1].freq;
+    dw_next = ticks + 250;
+    dw_hold_until = ticks;
     show_vfo2();
 }
 
-/* The other VFO on a small line under the main frequency, receive only: green while chip 1 is listening
- * to it, dim with dual watch off. */
-static void show_vfo2(void)
+/* Two rows, A on top and B below, laid out the same: big frequency, then the line. The active one (the one
+ * that transmits) is bright, the other dim, and the one being received green; nothing else changes. Channel
+ * mode: both rows are channels (each VFO keeps its own); VFO mode: both are VFOs. */
+static void row_data(int i, uint32_t *f, int *md, int *sft, int *tt, int *rt, uint16_t *tv, uint16_t *rv, char *pw, char *right)
 {
-    if (menu_open) return;
-    const vfo_t *v = &vfos[vfo_cur ^ 1];
-    char s[28], f[16];
-    int p = 0;
-    s[p++] = vfo_cur ? 'A' : 'B'; s[p++] = ' '; s[p++] = ' ';
-    fmt_freq(f, v->freq);
-    for (const char *q = f; *q; q++) s[p++] = *q;
-    s[p++] = ' '; s[p++] = ' ';
-    for (const char *q = mode_name[v->mode % NMODES]; *q; q++) s[p++] = *q;
-    s[p] = 0;
-    lcd_fill(0, Y_VFO2, LCD_W, F_SMALL->height, C_BLACK);
-    aa_text_c(Y_VFO2, F_SMALL, s, !dw_on ? P->dim : dw_hop ? C_GREEN : P->light, C_BLACK);
+    int act = i == vfo_cur, live = act && !dw_hop, k = 0;
+    pw[0] = power_name[power][0]; pw[1] = 0;   /* VFO mode: the power, the same on both rows */
+    *f = 0; *md = MODE_FM; *sft = 0; *tt = TONE_OFF; *rt = TONE_OFF; *tv = 0; *rv = 0;
+    if (live) { *f = freq10; *md = mode; *sft = chan_mode ? 0 : shift; *tt = tone_type; *rt = rx_tone_type; *tv = tone_val; *rv = rx_tone_val; }
+    if (chan_mode) {
+        uint8_t c[CH_SIZE];
+        int n = chan_of[i];
+        if (chan_read(n, c)) {
+            if (!live) {
+                *f = (uint32_t)c[6] | (uint32_t)c[7] << 8 | (uint32_t)c[8] << 16 | (uint32_t)c[9] << 24;
+                *md = c[0] == 1 ? MODE_AM : c[0] >= 2 ? MODE_USB : c[3] ? MODE_NFM : MODE_FM;
+                tone_from_chan((uint16_t)(c[14] | c[15] << 8), tt, tv);
+                tone_from_chan((uint16_t)(c[4] | c[5] << 8), rt, rv);
+                pw[0] = c[16] == 2 ? 'H' : c[16] == 1 ? 'M' : 'L';    /* the channel's own power */
+            }
+            for (int j = 0; j < 16 && k < 17; j++) { uint8_t ch = c[32 + j]; if (ch >= 0x20 && ch < 0x7F) right[k++] = (char)ch; }
+            while (k && right[k - 1] == ' ') k--;
+        }
+        if (!k) {
+            n++;
+            if (n >= 1000) right[k++] = (char)('0' + n / 1000 % 10);
+            right[k++] = (char)('0' + n / 100 % 10); right[k++] = (char)('0' + n / 10 % 10); right[k++] = (char)('0' + n % 10);
+        }
+    } else {
+        if (!live) { const vfo_t *v = &vfos[i]; *f = v->freq; *md = v->mode % NMODES; *sft = v->shift; *tt = v->tt; *rt = v->rt; *tv = v->tv; *rv = v->rv; }
+    }
+    right[k] = 0;
 }
 
-/* Chip 1 to the other VFO's frequency, mode and receive tone, without changing the main VFO. */
-static void dw_hop_start(void)
+static int rows_key = -1;
+static void show_rows(void)
+{
+    if (menu_open) return;
+    rows_key = vfo_cur | (audio_on && !dw_hop) << 1 | dw_heard << 2;
+    for (int i = 0; i < 2; i++) {
+        uint32_t f;
+        int md, sft, tt, rt, act = i == vfo_cur;
+        uint16_t tv, rv;
+        char pw[2], right[18], tag[2] = { (char)('A' + i), 0 };
+        row_data(i, &f, &md, &sft, &tt, &rt, &tv, &rv, pw, right);
+        int rx = act ? audio_on && !dw_hop : dw_heard;  /* this row is being received */
+        uint16_t col = rx ? C_GREEN : act ? C_WHITE : RGB(153, 153, 153);   /* active white, other 60% */
+        uint16_t bg = C_BLACK;
+        int yf = i ? Y_FREQ2 : Y_FREQ, yl = i ? Y_LINE2 : Y_LINE1;
+        lcd_fill(0, yf - 2, LCD_W, 2, bg);
+        draw_freq_big(yf, f, col, col, bg);
+        lcd_fill(0, yf + font_big.height, LCD_W, yl - yf - font_big.height, bg);
+        band_line(yl, tag, bg, md, sft, tt, rt, tv, rv, pw, right, col);
+        lcd_fill(0, yl + F_SMALL->height, LCD_W, 2, bg);
+    }
+}
+
+static void show_vfo2(void)
+{
+    show_rows();
+}
+
+/* Recolour the rows when the active one or the receiving one changes. */
+static void rows_refresh(void)
+{
+    if (menu_open) return;
+    if ((vfo_cur | (audio_on && !dw_hop) << 1 | dw_heard << 2) != rows_key) show_rows();
+}
+
+/* Chip 1 to the other VFO's frequency, mode and receive tone, without changing the main VFO; and back. */
+static void dw_go_other(void)
 {
     if (!chan_mode) vfo_store();
     dw_saved_power = power;
+    dw_main_freq = freq10;
+    if (chan_mode) {                   /* the other VFO's channel */
+        uint8_t c[CH_SIZE];
+        if (!chan_read(chan_of[vfo_cur ^ 1], c)) return;
+        uint32_t rx = (uint32_t)c[6] | (uint32_t)c[7] << 8 | (uint32_t)c[8] << 16 | (uint32_t)c[9] << 24;
+        mode = c[0] == 1 ? MODE_AM : c[0] >= 2 ? MODE_USB : c[3] ? MODE_NFM : MODE_FM;
+        tone_from_chan((uint16_t)(c[4] | c[5] << 8), &rx_tone_type, &rx_tone_val);
+        audio_close();
+        radio_tune(rx);
+        radio_mode();
+        dw_freq = rx;
+        return;
+    }
     const vfo_t *v = &vfos[vfo_cur ^ 1];
     mode = v->mode % NMODES; rx_tone_type = v->rt; rx_tone_val = v->rv;
     audio_close();
     radio_tune(v->freq);
     radio_mode();
-    dw_hop = 1;
-    dw_quiet_since = ticks;
-    show_vfo2();
-    uart_puts("DW SWITCHED\r\n");
 }
 
-static void dw_hop_end(void)
+static void dw_go_main(void)
 {
-    if (!dw_hop) return;
-    dw_hop = 0;
-    dw_wait_clear = 1;
     if (chan_mode) { chan_apply(chan_num); power = dw_saved_power; }
     else vfo_load(vfo_cur);
-    show_vfo2();
-    uart_puts("DW BACK\r\n");
+}
+
+/* Back to the main VFO or channel at once (key, PTT, serial, dual watch off); turns resume in 2 s. */
+static void dw_hop_end(void)
+{
+    dw_hold_until = ticks + 2000;
+    dw_hits = dw_found = 0;
+    if (dw_hop) { dw_hop = 0; dw_go_main(); rssi_hold_until = ticks + 40; }
+    if (dw_heard) { dw_heard = 0; show_vfo2(); uart_puts("DW BACK\r\n"); }
 }
 
 static void dw_stop(void)
 {
     dw_hop_end();
-    bk_write(1, 0x30, 0x0000);
-    bk_write(1, 0x37, 0x1D00);
+    dw_chip2_sleep();
     dw_on = 0;
     show_vfo2();
 }
 
 static void dw_poll(void)
 {
-    if ((int32_t)(ticks - dw_next) < 0) return;
-    dw_next = ticks + 100;
-    if (!dw_hop) {
-        uint32_t other = vfos[vfo_cur ^ 1].freq;
-        if (other != dw_freq) { dw_tune(other); dw_wait_clear = 0; return; }
-        int heard = (bk_read(1, 0x65) & 0x7F) <= 70 - 5 * sq_level;
-        if (!heard) dw_wait_clear = 0;
-        else if (!dw_wait_clear && !audio_on) dw_hop_start();
-    } else {
-        if (audio_on) dw_quiet_since = ticks;
-        else if ((int32_t)(ticks - dw_quiet_since) >= 2000) { dw_hop_end(); show_status("RX", C_GREEN); }
+    if (!chan_mode) dw_freq = vfos[vfo_cur ^ 1].freq;
+    if (audio_on) {                    /* a channel is open: stay on it until it closes, as stock (no priority check) */
+        if (dw_hop && !dw_heard) { dw_heard = 1; show_vfo2(); uart_puts("DW SWITCHED\r\n"); }
+        dw_hold_until = ticks + 2000;  /* turns resume 2 s after it closes */
+        return;
     }
+    if ((int32_t)(ticks - dw_hold_until) < 0) return;
+    if (dw_heard) { dw_heard = 0; show_vfo2(); uart_puts("DW BACK\r\n"); }
+    if ((int32_t)(ticks - dw_poll_next) >= 0) {
+        dw_poll_next = ticks + 2;
+        if (!sq_carrier()) dw_hits = 0;
+        else if (dw_hits < 7 && ++dw_hits == 7) dw_found = 1;
+    }
+    if ((int32_t)(ticks - dw_next) < 0) return;
+    if (dw_found && (int32_t)(ticks - dw_next) < 300) return;   /* a signal: time for the audio to open */
+    dw_hits = dw_found = 0;
+    if (dw_hop) { dw_hop = 0; dw_go_main(); }
+    else { dw_go_other(); dw_hop = 1; }
+    rssi_hold_until = ticks + 40;      /* RSSI reads about -145 dBm for a few ms after the retune */
+    dw_next = ticks + 250;
 }
 
 /* ---------------- channels (stock format, read only) ---------------- */
@@ -1977,10 +2026,6 @@ static void dw_poll(void)
  * +0 mode (0 FM, 1 AM, 2 SSB, 3 CW), +3 narrow, +4 RX tone, +6 RX frequency, +10 TX frequency (10 Hz,
  * FF FF FF FF = empty), +14 TX tone, +16 power, +32 name (16 chars). Tones: bits 15-12 type (1 CTCSS,
  * 2 DCS, 3 DCS inverted), bits 11-0 value (0.1 Hz, or the DCS code as octal digits). */
-#define CH_BASE 0x4000u
-#define CH_SIZE 0x30u
-#define CH_COUNT 1024
-
 static int chan_read(int n, uint8_t *c)
 {
     flash_read(CH_BASE + (uint32_t)n * CH_SIZE, c, CH_SIZE);
@@ -2003,6 +2048,7 @@ static int chan_apply(int n)
     uint32_t tx = (uint32_t)c[10] | (uint32_t)c[11] << 8 | (uint32_t)c[12] << 16 | (uint32_t)c[13] << 24;
     if (!band_of(rx)) return 0;
     chan_num = n;
+    chan_of[vfo_cur] = n;
     chan_txf = tx == 0xFFFFFFFFu ? rx : tx;
     chan_rxonly = c[1] == 1;
     mode = c[0] == 1 ? MODE_AM : c[0] >= 2 ? MODE_USB : c[3] ? MODE_NFM : MODE_FM;
@@ -2084,6 +2130,7 @@ static void chan_off(void)
 static int chan_enter(void)
 {
     uint8_t c[CH_SIZE];
+    chan_num = chan_of[vfo_cur];
     int n = chan_read(chan_num, c) ? chan_num : chan_next(chan_num, 1);
     if (n < 0) { show_status("NO CHANNELS", C_YELLOW); return 0; }
     chan_on();
@@ -2095,6 +2142,20 @@ static void chan_leave(void)
 {
     chan_off();
     vfo_load(vfo_cur);                 /* the VFO's own frequency, mode and tones again */
+}
+
+/* A or B becomes the active one (the one that transmits). VFO mode: the two VFOs; channel mode: each
+ * keeps its own channel. */
+static void select_ab(int n)
+{
+    if (n == vfo_cur) return;
+    if (!chan_mode) { vfo_select(n); return; }
+    int old = vfo_cur;
+    vfo_cur = n;
+    int ch = chan_of[n];
+    uint8_t c[CH_SIZE];
+    if (!chan_read(ch, c)) ch = chan_next(ch, 1);
+    if (ch < 0 || !chan_apply(ch)) { vfo_cur = old; chan_apply(chan_num); }
 }
 
 /* Reverse: on a split channel swap receive and transmit; in VFO mode with a shift set, listen on the
@@ -2121,7 +2182,7 @@ static int reverse_toggle(void)
  * checksum and read back. */
 #define SET_ADDR  0xFC000u
 #define SET_MAGIC 0x53383955u          /* "U98S" */
-typedef struct {
+typedef struct {                       /* version 1 (tests 17-34) */
     uint32_t magic;
     uint16_t version, size;
     vfo_t vfo[2];
@@ -2129,22 +2190,37 @@ typedef struct {
     uint16_t chan_num;
     uint32_t band_freq[NRXBANDS];
     uint32_t sum;
+} settings_v1_t;
+typedef struct {                       /* version 2: as version 1, plus each VFO's channel */
+    uint32_t magic;
+    uint16_t version, size;
+    vfo_t vfo[2];
+    uint8_t vfo_cur, power, mic, sq, tot, bl, light, edge, pal, font, chan_mode;
+    uint16_t chan_num;
+    uint32_t band_freq[NRXBANDS];
+    uint16_t chan_of[2];
+    uint32_t sum;
 } settings_t;
 static uint32_t set_saved_sum, set_change_at;
 static int set_loaded, set_saves;
 
+static uint32_t fnv(const void *p, unsigned n)       /* FNV-1a */
+{
+    const uint8_t *b = (const uint8_t *)p;
+    uint32_t h = 2166136261u;
+    for (unsigned i = 0; i < n; i++) h = (h ^ b[i]) * 16777619u;
+    return h;
+}
+
 static uint32_t set_checksum(const settings_t *s)
 {
-    const uint8_t *b = (const uint8_t *)s;
-    uint32_t h = 2166136261u;                         /* FNV-1a over everything before sum */
-    for (unsigned i = 0; i < offsetof(settings_t, sum); i++) h = (h ^ b[i]) * 16777619u;
-    return h;
+    return fnv(s, offsetof(settings_t, sum));
 }
 
 static void set_collect(settings_t *s)
 {
     __builtin_memset(s, 0, sizeof *s);
-    s->magic = SET_MAGIC; s->version = 1; s->size = sizeof *s;
+    s->magic = SET_MAGIC; s->version = 2; s->size = sizeof *s;
     vfo_t *v = &vfos[vfo_cur];                        /* the current VFO's live state */
     if (!chan_mode) {
         v->freq = freq10; v->mode = (uint8_t)mode; v->step = (uint8_t)step_idx; v->ofs = (uint8_t)ofs_idx;
@@ -2155,6 +2231,7 @@ static void set_collect(settings_t *s)
     s->tot = (uint8_t)tot_idx; s->bl = (uint8_t)bl_idx; s->light = (uint8_t)light_idx; s->edge = (uint8_t)edge;
     s->pal = (uint8_t)(P - palettes); s->font = F_MED == &font_med ? 1 : 2;
     s->chan_mode = (uint8_t)chan_mode; s->chan_num = (uint16_t)chan_num;
+    s->chan_of[0] = (uint16_t)chan_of[0]; s->chan_of[1] = (uint16_t)chan_of[1];
     for (int i = 0; i < NRXBANDS; i++) s->band_freq[i] = band_freq[i];
     s->sum = set_checksum(s);
 }
@@ -2203,7 +2280,14 @@ static void set_load(void)
 {
     settings_t s;
     flash_read(SET_ADDR, (uint8_t *)&s, sizeof s);
-    if (s.magic != SET_MAGIC || s.version != 1 || s.size != sizeof s || s.sum != set_checksum(&s)) return;
+    if (s.magic != SET_MAGIC) return;
+    if (s.version == 1) {              /* tests 17-34: both VFOs start on the one channel */
+        settings_v1_t o;
+        flash_read(SET_ADDR, (uint8_t *)&o, sizeof o);
+        if (o.size != sizeof o || o.sum != fnv(&o, offsetof(settings_v1_t, sum))) return;
+        __builtin_memcpy(&s, &o, offsetof(settings_v1_t, sum));
+        s.chan_of[0] = s.chan_of[1] = o.chan_num;
+    } else if (s.version != 2 || s.size != sizeof s || s.sum != set_checksum(&s)) return;
     vfos[0] = s.vfo[0]; vfos[1] = s.vfo[1];
     vfo_cur = s.vfo_cur & 1;
     const vfo_t *v = &vfos[vfo_cur];
@@ -2213,7 +2297,9 @@ static void set_load(void)
     light_idx = s.light; edge = s.edge & 3; P = &palettes[s.pal & 1];
     F_MED = s.font == 1 ? &font_med : &font_med2; F_SMALL = s.font == 1 ? &font_small : &font_small2;
     for (int i = 0; i < NRXBANDS; i++) band_freq[i] = s.band_freq[i];
-    chan_num = s.chan_num < CH_COUNT ? s.chan_num : 0;
+    chan_of[0] = s.chan_of[0] < CH_COUNT ? s.chan_of[0] : 0;
+    chan_of[1] = s.chan_of[1] < CH_COUNT ? s.chan_of[1] : 0;
+    chan_num = chan_of[vfo_cur];
     chan_mode = s.chan_mode == 1;
     set_saved_sum = s.sum;
     set_loaded = 1;
@@ -2734,6 +2820,7 @@ static void command(char *cmd)
         if (cmd[1] == 0) { report_freq(); return; }
         if (tx_on) { uart_puts("ERR transmitting\r\n"); return; }
         if (!parse_mhz(cmd + 1, &f) || !radio_tune(f)) { uart_puts("ERR frequency (18-660, 840-1300 MHz)\r\n"); return; }
+        step_idx = step_for(f);
         show_freq();
         report_freq();
     } else if (cmd[0] == 'M' && cmd[1] == ' ') {
@@ -2852,7 +2939,7 @@ static void command(char *cmd)
         if (cmd[3] == ' ') {
             if ((cmd[4] != 'A' && cmd[4] != 'B') || cmd[5]) { uart_puts("ERR VFO A or B\r\n"); return; }
             if (tx_on) { uart_puts("ERR transmitting\r\n"); return; }
-            if (cmd[4] - 'A' != vfo_cur) { vfo_select(cmd[4] - 'A'); show_freq(); show_status("RX", C_GREEN); }
+            if (cmd[4] - 'A' != vfo_cur) { select_ab(cmd[4] - 'A'); show_freq(); show_status("RX", C_GREEN); }
         }
         uart_puts(vfo_cur ? "VFO B\r\n" : "VFO A\r\n");
         report_freq();
@@ -2958,7 +3045,7 @@ static void command(char *cmd)
         uart_puts("CLK "); put_dec((int32_t)(system_core_clock / 1000000u));
         uart_puts(" MHZ, BOOTLOADER LEFT "); put_dec((int32_t)(boot_clock / 1000000u)); uart_puts(" MHZ\r\n");
     } else if (!__builtin_strcmp(cmd, "HELP")) {
-        uart_puts("PING, VER, F [MHz], M FM|NFM|AM|USB, RSSI, SQ 0-9, VOL 0-63, MIC [0-31], POW [LOW|MID|HIGH], T [OFF|67.0|D023N|D023I], RT [same, receive], SHIFT [OFF|+|-], OFFSET [MHz], VFO [A|B], PTT ON|OFF (repeat ON within 2 s), DW [ON|OFF], SCAN ON|DOWN|OFF, FDET, CH [n], CHLIST [n], VFOMODE, SAVE, SETTINGS, CAL, SPIID, SPIRD, AGC, ADC, R1 xx, R2 xx. TX: PTT1 voice, alarm button 1750 Hz; amateur bands, CB, marine and PMR446 only.\r\n");
+        uart_puts("PING, VER, F [MHz], M FM|NFM|AM|USB, RSSI, SQ 0-9, VOL 0-63, MIC [0-31], POW [LOW|MID|HIGH], T [OFF|67.0|D023N|D023I], RT [same, receive], SHIFT [OFF|+|-], OFFSET [MHz], VFO [A|B], PTT ON|OFF (repeat ON within 2 s), DW [ON|OFF], SCAN ON|DOWN|OFF, FDET, CH [n], CHLIST [n], VFOMODE, SAVE, SETTINGS, CAL, SPIID, SPIRD, AGC, ADC, R1 xx, R2 xx. TX: PTT1 voice, alarm button 1750 Hz; 18-64 and 136-520 MHz.\r\n");
     } else {
         uart_puts("ERR unknown command, try HELP\r\n");
     }
@@ -3139,7 +3226,7 @@ int main(void)
                     pressed = 0;
                 }
                 if (fdet_on) { fdet_stop(); show_status("RX", C_GREEN); pressed = 0; }
-                if (dw_hop) { dw_hop_end(); show_status("RX", C_GREEN); }
+                if (dw_on) { if (dw_heard) show_status("RX", C_GREEN); dw_hop_end(); }
                 if (was_dark) pressed = 0;                     /* the first press only wakes the screen */
             }
             const uint16_t rep_keys = (1u << 1) | (1u << 2);   /* up, down repeat when held */
@@ -3209,11 +3296,11 @@ int main(void)
                         if (!changed) show_status("EMPTY CHANNEL", C_YELLOW);
                     } else {
                         changed = radio_tune(khz * 100);
+                        if (changed) step_idx = step_for(freq10);
                         if (!changed) show_status("BAD FREQUENCY", C_YELLOW);
                     }
                 } else if (k == '*') {
-                    if (chan_mode) chan_leave();
-                    vfo_select(vfo_cur ^ 1);
+                    select_ab(vfo_cur ^ 1);
                     show_info();
                     changed = 1;
                 } else if ((k == K_UP || k == K_DOWN) && chan_mode) {
@@ -3232,9 +3319,10 @@ int main(void)
         }
 
         /* Squelch every 50 ms; side keys force it open. */
-        if (!tx_on && !fdet_on && (int32_t)(ticks - next_sq) >= 0) {
+        if (!tx_on && !fdet_on && (int32_t)(ticks - next_sq) >= 0 && (int32_t)(ticks - rssi_hold_until) >= 0) {
             next_sq = ticks + 50;
             last_rssi = rssi_dbm();
+            if (!dw_hop || audio_on) meter_dbm = last_rssi;   /* the meter: the channel heard, else the main one */
             last_noise = bk_read(0, 0x65) & 0x7F;
             agc_run(last_rssi);
             int side = side_key();
@@ -3287,9 +3375,11 @@ int main(void)
             }
         }
 
+        rows_refresh();
+
         if (!tx_on && (int32_t)(ticks - next_rssi) >= 0) {
             next_rssi = ticks + 300;
-            show_rssi(last_rssi, last_noise);
+            show_rssi(meter_dbm, last_noise);
         }
 
         if (scanning && !tx_on && !menu_open) scan_step();

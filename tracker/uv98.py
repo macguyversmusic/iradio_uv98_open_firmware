@@ -29,13 +29,17 @@ def can_tune(freq_hz):
 
 
 def pick_mode(sat_mode):
-    """Receive mode for a satellite transmitter mode from SatNOGS."""
+    """Receive mode for a satellite transmitter mode from SatNOGS: FM voice and AFSK packet NFM; FSK,
+    GFSK and GMSK data wide FM (flat audio for a decoder on the audio output); AM AM; SSB, CW, BPSK and
+    the rest USB."""
     m = (sat_mode or "").upper()
     if m.startswith("FM") or "AFSK" in m:
         return "NFM"
+    if "FSK" in m or "MSK" in m:
+        return "FM"
     if m == "AM":
         return "AM"
-    return "USB"                     # SSB, CW, BPSK, FSK and other data modes
+    return "USB"
 
 
 class UV98:
@@ -134,6 +138,29 @@ class UV98:
             if l.startswith("VFO "):
                 return l.split()[1]
         raise RadioError("; ".join(reply) or "no reply to VFO")
+
+    def rssi(self):
+        for line in self._cmd("RSSI"):
+            p = line.split()
+            if len(p) >= 2 and p[0] == "RSSI":
+                try:
+                    return int(p[1])
+                except ValueError:
+                    pass
+        raise RadioError("no RSSI reply")
+
+    def get_squelch(self):
+        """The squelch level, or None if the firmware cannot report it."""
+        for line in self._cmd("SQ"):
+            p = line.split()
+            if len(p) == 2 and p[0] == "SQ" and p[1].isdigit():
+                return int(p[1])
+        return None
+
+    def set_squelch(self, level):
+        reply = self._cmd(f"SQ {int(level)}")
+        if not any(l.startswith("SQ") for l in reply):
+            raise RadioError("; ".join(reply) or "no reply to SQ")
 
     def set_volume(self, level):
         level = max(0, min(63, int(level)))
