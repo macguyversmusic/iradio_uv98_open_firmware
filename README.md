@@ -16,7 +16,7 @@ Open firmware for the iRadio UV-98 Plus handheld (Radtel RT-880G family, FCC ID 
 | Voice transmit at minimum power on PMR446 (heard on another radio, but the audio is low) | 8 |
 | Stock transmit audio settings; at minimum power voice is clear only at mic gain 31 (see test 11: the weak minimum-power signal was most of the problem) | 9 |
 | Transmit on the amateur bands; 1750 Hz burst on the alarm button, heard on another radio | 10 |
-| Power LOW from calibration (voice crystal clear; MID and HIGH not tested yet), 2 m transmit, 60 s time-out timer | 11 |
+| Power levels from calibration: LOW voice crystal clear; LOW, MID and HIGH step up in battery current as expected (no RF meter used); 2 m transmit; 60 s time-out timer | 11 |
 | CTCSS 88.5 and DCS 023 normal / inverted on transmit and as tone squelch on receive, each checked against a UV-5R | 11 |
 | USB receive (a carrier 1 kHz up gives a steady 1 kHz tone); starts on PMR 1 NFM | 11 |
 
