@@ -6,7 +6,7 @@
 #include "font.h"
 #include "fonts_aa.h"
 
-#define FW_NAME  "UV98+ open test 13"
+#define FW_NAME  "UV98+ open test 14"
 #define APP_BASE 0x08002800u
 
 /* ---------------- timing ---------------- */
@@ -122,6 +122,36 @@ static void tx_kill(void)
     bk1_write(0x33, 0x0000);
     bk1_write(0x30, 0x0000);
     bk1_write(0x37, 0x1D00);
+}
+
+/* ---------------- system clock ---------------- */
+/* As stock (0x8021124, Artery's standard setup): HICK 8 MHz -> PLL x96 /1 /8 = 96 MHz; AHB and APB2
+ * 96 MHz, APB1 48 MHz (the display's SPI3 then runs at 24 MHz). Before this the app ran at whatever
+ * clock the bootloader left. */
+static uint32_t boot_clock;
+static void clock_config(void)
+{
+    boot_clock = system_core_clock;
+    crm_reset();
+    flash_psr_set(4);                                              /* flash psr = 0x154 */
+    crm_periph_clock_enable(CRM_PWC_PERIPH_CLOCK, TRUE);
+    volatile uint32_t *ldo = (volatile uint32_t *)(0x40007000u + 0x10u);
+    *ldo = (*ldo & ~3u) | 3u;                                      /* LDO 1.3 V, for up to 150 MHz */
+    crm_clock_source_enable(CRM_CLOCK_SOURCE_LICK, TRUE);
+    while (crm_flag_get(CRM_LICK_STABLE_FLAG) != SET) { }
+    crm_clock_source_enable(CRM_CLOCK_SOURCE_HICK, TRUE);
+    while (crm_flag_get(CRM_HICK_STABLE_FLAG) != SET) { }
+    crm_pll_config(CRM_PLL_SOURCE_HICK, 96, 1, CRM_PLL_FR_8);
+    crm_clock_source_enable(CRM_CLOCK_SOURCE_PLL, TRUE);
+    while (crm_flag_get(CRM_PLL_STABLE_FLAG) != SET) { }
+    crm_ahb_div_set(CRM_AHB_DIV_1);
+    crm_apb2_div_set(CRM_APB2_DIV_1);
+    crm_apb1_div_set(CRM_APB1_DIV_2);
+    crm_auto_step_mode_enable(TRUE);
+    crm_sysclk_switch(CRM_SCLK_PLL);
+    while (crm_sysclk_switch_status_get() != CRM_SCLK_PLL) { }
+    crm_auto_step_mode_enable(FALSE);
+    system_core_clock_update();
 }
 
 /* ---------------- start-up cleanup and faults ---------------- */
@@ -585,7 +615,15 @@ static uint16_t power_reg(uint32_t f)
  * 0x7D = 0xE940 + gain. */
 static int mic_gain = 25;
 #define TX_DEVIATION 0x34E2   /* 400-480 MHz calibration block, offset 3 */
-#define TX_MAX_MS    60000    /* time-out timer */
+/* Time-out timer, seconds (menu). */
+static const uint16_t tot_list[] = { 15, 30, 60, 90, 120, 180, 300, 600 };
+static int tot_idx = 2;                /* 60 s */
+/* Tuning step, 10 Hz units (menu). */
+static const uint16_t step_list[] = { 10, 100, 250, 500, 625, 1000, 1250, 2500, 5000, 10000 };
+static int step_idx = 6;               /* 12.5 kHz */
+/* Backlight levels (stock 0x801FC44: 60, 65, 70, 76, 255). */
+static const uint8_t bl_list[] = { 60, 65, 70, 76, 255 };
+static int bl_idx = 4;
 
 /* 1750 Hz tone burst: tone 1 frequency word, Hz * 10.3 (the stock tone formula, Hz / 10 * 0x67). */
 #define TONE_1750    (175u * 0x67u)
@@ -601,7 +639,7 @@ static void rx_tone(void);
 enum { MODE_FM, MODE_NFM, MODE_AM, MODE_USB, NMODES };
 static const char *const mode_name[] = { "FM", "NFM", "AM", "USB" };
 
-static uint32_t freq10 = 44600625;   /* start on PMR446 channel 1, 446.00625 MHz */
+static uint32_t freq10 = 14550000;   /* start on 145.500 MHz */
 static int mode = MODE_NFM;
 static int tx_on;
 
@@ -998,6 +1036,8 @@ static int tone_text_of(int type, uint16_t val, char *s)
 static int tone_text(char *s) { return tone_text_of(tone_type, tone_val, s); }
 
 /* ---------------- home screen (240 x 320) ---------------- */
+static int menu_open;                 /* while the menu is shown, home-screen drawing waits */
+static const char *const step_name[] = { "100 Hz", "1 kHz", "2.5 kHz", "5 kHz", "6.25 kHz", "10 kHz", "12.5 kHz", "25 kHz", "50 kHz", "100 kHz" };
 #define Y_FREQ    42
 #define Y_CHIPS1  104
 #define Y_CHIPS2  140
@@ -1017,10 +1057,40 @@ static void separator(int y)
     lcd_fill(14, y, LCD_W - 28, 1, P->sep);
 }
 
+/* Receive bands (menu item 1): each remembers its last frequency; mode and step are set on entry. */
+typedef struct { const char *name; uint32_t lo, hi, start; uint8_t mode, step; } rxband_t;
+static const rxband_t rxbands[] = {
+    { "10 m",    2800000,   2970000,   2840000, MODE_USB, 1 },
+    { "6 m",     5000000,   5400000,   5015000, MODE_USB, 1 },
+    { "AIR",    11800000,  13700000,  11800000, MODE_AM,  7 },
+    { "2 m",    14400000,  14800000,  14550000, MODE_NFM, 6 },
+    { "MARINE", 15600000,  16202500,  15680000, MODE_FM,  7 },
+    { "220",    22000000,  22500000,  22350000, MODE_NFM, 6 },
+    { "70 cm",  42000000,  45000000,  43350000, MODE_NFM, 6 },
+    { "23 cm", 124000000, 130000000, 129750000, MODE_NFM, 7 },
+};
+#define NRXBANDS ((int)(sizeof rxbands / sizeof rxbands[0]))
+static uint32_t band_freq[NRXBANDS];
+static int band_last = 3;
+
+static int rxband_of(uint32_t f)
+{
+    for (int i = 0; i < NRXBANDS; i++) if (f >= rxbands[i].lo && f <= rxbands[i].hi) return i;
+    return -1;
+}
+
+static void top_label(void)
+{
+    if (menu_open) return;
+    int b = rxband_of(freq10);
+    const char *s = b >= 0 ? rxbands[b].name : "VFO";
+    lcd_fill(0, 4, 120, 26, P->bar);
+    aa_text(10, (34 - F_SMALL->height) / 2, F_SMALL, s, P->light, P->bar);
+}
+
 static void top_bar(void)
 {
     lcd_fill(0, 0, LCD_W, 34, P->bar);
-    aa_text(10, (34 - F_SMALL->height) / 2, F_SMALL, "UV98+  OPEN", P->dim, P->bar);
     separator(Y_SEP1);
     separator(Y_SEP2);
 }
@@ -1074,6 +1144,7 @@ static int tone_chip_text(char *s, const char *pre, int type, uint16_t val)
 
 static void show_chips(void)
 {
+    if (menu_open) return;
     char mic[8] = "MIC ", tx[16], rx[16];
     mic[4] = (char)('0' + mic_gain / 10); mic[5] = (char)('0' + mic_gain % 10); mic[6] = 0;
     const char *r1[3] = { mode_name[mode], power_name[power], mic };
@@ -1089,11 +1160,12 @@ static void show_chips(void)
 
 static void show_info(void)
 {
+    if (menu_open) return;
     char s[24] = "SQ ";
     int p = 3;
     s[p++] = (char)('0' + sq_level);
-    const char *step = "    STEP 12.5 kHz";
-    for (; *step; step++) s[p++] = *step;
+    for (const char *q = "    STEP "; *q; q++) s[p++] = *q;
+    for (const char *q = step_name[step_idx]; *q; q++) s[p++] = *q;
     s[p] = 0;
     lcd_fill(0, Y_INFO, LCD_W, F_SMALL->height, C_BLACK);
     aa_text_c(Y_INFO, F_SMALL, s, P->dim, C_BLACK);
@@ -1102,6 +1174,7 @@ static void show_info(void)
 /* "446.006" large, "25" smaller on the same baseline, centred. */
 static void show_freq(void)
 {
+    if (menu_open) return;
     char s[16], big[12], small[4];
     fmt_freq(s, freq10);
     int dot = 0;
@@ -1114,9 +1187,21 @@ static void show_freq(void)
     small[j] = 0;
     int wb = aa_width(&font_big, big), ws = aa_width(F_MED, small) + 4;
     if (wb + ws > LCD_W - 8) ws = 0;
-    lcd_fill(0, Y_FREQ, LCD_W, font_big.height, C_BLACK);
-    int x = aa_text((LCD_W - wb - ws) / 2, Y_FREQ, &font_big, big, C_WHITE, C_BLACK);
-    if (ws) aa_text(x + 4, Y_FREQ + font_big.baseline - F_MED->baseline, F_MED, small, P->light, C_BLACK);
+    int bi = rxband_of(freq10);
+    if (bi >= 0) { band_freq[bi] = freq10; band_last = bi; }
+    top_label();
+    int x0 = (LCD_W - wb - ws) / 2;
+    lcd_fill(0, Y_FREQ, x0, font_big.height, C_BLACK);
+    int x = aa_text(x0, Y_FREQ, &font_big, big, C_WHITE, C_BLACK);
+    if (ws) {
+        int ys = Y_FREQ + font_big.baseline - F_MED->baseline;
+        lcd_fill(x, Y_FREQ, 4, font_big.height, C_BLACK);
+        lcd_fill(x + 4, Y_FREQ, ws - 4, ys - Y_FREQ, C_BLACK);
+        x = aa_text(x + 4, ys, F_MED, small, P->light, C_BLACK);
+        if (ys + F_MED->height < Y_FREQ + font_big.height)
+            lcd_fill(x0 + wb, ys + F_MED->height, ws, Y_FREQ + font_big.height - ys - F_MED->height, C_BLACK);
+    }
+    if (x < LCD_W) lcd_fill(x, Y_FREQ, LCD_W - x, font_big.height, C_BLACK);
     show_chips();
 }
 
@@ -1150,6 +1235,7 @@ static void meter_scale(void)
 static void show_rssi(int dbm, int noise)
 {
     (void)noise;
+    if (menu_open) return;
     int s9 = freq10 < 3000000 ? -73 : -93;
     int rel = dbm - (s9 - 54);                    /* dB above S0 */
     int bars = rel <= 0 ? 0 : rel < 54 ? rel * 2 / 9 : 12 + (rel - 54) / 5;
@@ -1205,6 +1291,7 @@ static void show_status(const char *s, uint16_t fg)
 {
     status_text = s;
     status_fg = fg;
+    if (menu_open) return;
     banner(s, fg == C_RED ? P->b_tx : fg == C_YELLOW ? P->b_warn : P->b_rx);
 }
 
@@ -1223,6 +1310,7 @@ static void show_tx(void)
 /* Frequency being typed, shown in the banner; empty restores the status. */
 static void show_entry(const char *e)
 {
+    if (menu_open) return;
     if (!*e) { show_status(status_text, status_fg); return; }
     char s[20];
     int p = 0;
@@ -1232,9 +1320,28 @@ static void show_entry(const char *e)
 }
 
 /* Redraw everything after a style change. */
+static void clear_band(int y0, int y1)
+{
+    if (y1 > y0) lcd_fill(0, y0, LCD_W, y1 - y0, C_BLACK);
+}
+
 static void draw_home(void)
 {
-    lcd_fill(0, 0, LCD_W, LCD_H, C_BLACK);
+    /* Clear only the bands between sections; each section paints its own area. */
+    clear_band(34, Y_FREQ);
+    clear_band(Y_FREQ + font_big.height, Y_CHIPS1);
+    clear_band(Y_CHIPS1 + CHIP_H, Y_CHIPS2);
+    clear_band(Y_CHIPS2 + CHIP_H, Y_STATUS);
+    lcd_fill(0, Y_STATUS, 8, STATUS_H, C_BLACK);
+    lcd_fill(LCD_W - 8, Y_STATUS, 8, STATUS_H, C_BLACK);
+    lcd_fill(8, Y_STATUS, LCD_W - 16, 4, C_BLACK);
+    lcd_fill(8, Y_STATUS + STATUS_H - 4, LCD_W - 16, 4, C_BLACK);
+    clear_band(Y_STATUS + STATUS_H, Y_INFO);
+    clear_band(Y_INFO + F_SMALL->height, Y_MLABEL);
+    clear_band(Y_MLABEL + F_SMALL->height, Y_METER);
+    clear_band(Y_METER, Y_METER + METER_H);
+    clear_band(Y_METER + METER_H, Y_MSCALE);
+    clear_band(Y_MSCALE + F_SMALL->height, LCD_H);
     top_bar();
     show_freq();
     show_status(status_text, status_fg);
@@ -1243,6 +1350,241 @@ static void draw_home(void)
     meter_scale();
     meter_bars = -1;
     meter_label_force = 1;
+}
+
+/* ---------------- menu ---------------- */
+/* Green bar opens it; up/down picks an item; green edits; up/down changes the value (applied at once,
+ * up/down repeat when held); # jumps to the next tone type; green keeps the value, red bar restores
+ * it; red bar leaves the menu. Keys 1-9 and 0 open items 1-10 for editing. PTT closes the menu. */
+static const uint16_t ctcss_list[50] = {
+    670, 693, 719, 744, 770, 797, 825, 854, 885, 915, 948, 974, 1000, 1035, 1072, 1109, 1148,
+    1188, 1230, 1273, 1318, 1365, 1413, 1462, 1514, 1567, 1598, 1622, 1655, 1679, 1713, 1738,
+    1773, 1799, 1835, 1862, 1899, 1928, 1966, 1995, 2035, 2065, 2107, 2181, 2257, 2291, 2336,
+    2418, 2503, 2541 };
+static const uint16_t dcs_list[105] = {   /* octal codes */
+    0023, 0025, 0026, 0031, 0032, 0036, 0043, 0047, 0051, 0053, 0054, 0065, 0071, 0072, 0073,
+    0074, 0114, 0115, 0116, 0122, 0125, 0131, 0132, 0134, 0143, 0145, 0152, 0155, 0156, 0162,
+    0165, 0172, 0174, 0205, 0212, 0223, 0225, 0226, 0243, 0244, 0245, 0246, 0251, 0252, 0255,
+    0261, 0263, 0265, 0266, 0271, 0274, 0306, 0311, 0315, 0325, 0331, 0332, 0343, 0346, 0351,
+    0356, 0364, 0365, 0371, 0411, 0412, 0413, 0423, 0431, 0432, 0445, 0446, 0452, 0454, 0455,
+    0462, 0464, 0465, 0466, 0503, 0506, 0516, 0523, 0526, 0532, 0546, 0565, 0606, 0612, 0624,
+    0627, 0631, 0632, 0645, 0654, 0662, 0664, 0703, 0712, 0723, 0731, 0732, 0734, 0743, 0754 };
+#define NTONES (1 + 50 + 105 + 105)        /* off, CTCSS, DCS normal, DCS inverted */
+
+static int tone_index(int type, uint16_t val)
+{
+    if (type == TONE_CTCSS) { for (int i = 0; i < 50; i++) if (ctcss_list[i] == val) return 1 + i; return 1; }
+    if (type == TONE_DCS_N || type == TONE_DCS_I) {
+        int base = type == TONE_DCS_N ? 51 : 156;
+        for (int i = 0; i < 105; i++) if (dcs_list[i] == val) return base + i;
+        return base;
+    }
+    return 0;
+}
+
+static void tone_from_index(int i, int *type, uint16_t *val)
+{
+    if (i <= 0) { *type = TONE_OFF; *val = 0; }
+    else if (i <= 50) { *type = TONE_CTCSS; *val = ctcss_list[i - 1]; }
+    else if (i <= 155) { *type = TONE_DCS_N; *val = dcs_list[i - 51]; }
+    else { *type = TONE_DCS_I; *val = dcs_list[i - 156]; }
+}
+
+enum { MI_BAND, MI_POWER, MI_MIC, MI_TXTONE, MI_RXTONE, MI_SQ, MI_STEP, MI_MODE, MI_TOT, MI_BL, MI_COUNT };
+static const char *const menu_name[MI_COUNT] = {
+    "Band", "Power", "Mic gain", "TX tone", "RX tone", "Squelch", "Step", "Mode", "Time-out", "Backlight" };
+static int menu_sel, menu_edit;
+
+static void put2(char *s, int v) { if (v >= 10) *s++ = (char)('0' + v / 10); *s++ = (char)('0' + v % 10); *s = 0; }
+
+static void menu_value(int item, char *s)
+{
+    const char *src = 0;
+    switch (item) {
+    case MI_BAND: { int b = rxband_of(freq10); src = b >= 0 ? rxbands[b].name : "VFO"; break; }
+    case MI_POWER: src = power_name[power]; break;
+    case MI_MIC: put2(s, mic_gain); return;
+    case MI_TXTONE: case MI_RXTONE: {
+        char t[12];
+        if (!(item == MI_TXTONE ? tone_text(t) : tone_text_of(rx_tone_type, rx_tone_val, t))) { src = "OFF"; break; }
+        const char *q = t[0] == 'T' ? t + 1 : t;
+        while ((*s++ = *q++)) { }
+        return;
+    }
+    case MI_SQ: if (!sq_level) { src = "OPEN"; break; } put2(s, sq_level); return;
+    case MI_STEP: src = step_name[step_idx]; break;
+    case MI_MODE: src = mode_name[mode]; break;
+    case MI_TOT: { int v = tot_list[tot_idx], p = 0; char d[4]; int n = 0;
+                   do { d[n++] = (char)('0' + v % 10); v /= 10; } while (v);
+                   while (n) s[p++] = d[--n];
+                   s[p++] = ' '; s[p++] = 's'; s[p] = 0; return; }
+    case MI_BL: put2(s, bl_idx + 1); return;
+    }
+    while ((*s++ = *src++)) { }
+}
+
+static int clampi(int v, int lo, int hi) { return v < lo ? lo : v > hi ? hi : v; }
+
+static void menu_change(int item, int dir)
+{
+    int i;
+    switch (item) {
+    case MI_BAND: {
+        int b = rxband_of(freq10);
+        if (b < 0) b = band_last;
+        b = (b + dir + NRXBANDS) % NRXBANDS;
+        if (!band_freq[b]) band_freq[b] = rxbands[b].start;
+        mode = rxbands[b].mode;
+        step_idx = rxbands[b].step;
+        audio_close();
+        radio_tune(band_freq[b]);
+        radio_mode();
+        band_last = b;
+        break;
+    }
+    case MI_POWER: power = (power + dir + 4) % 4; break;
+    case MI_MIC: mic_gain = clampi(mic_gain + dir, 0, 31); break;
+    case MI_TXTONE: i = (tone_index(tone_type, tone_val) + dir + NTONES) % NTONES; tone_from_index(i, &tone_type, &tone_val); break;
+    case MI_RXTONE: i = (tone_index(rx_tone_type, rx_tone_val) + dir + NTONES) % NTONES;
+                    tone_from_index(i, &rx_tone_type, &rx_tone_val); if (!tx_on) rx_tone(); break;
+    case MI_SQ: sq_level = clampi(sq_level + dir, 0, 9); break;
+    case MI_STEP: step_idx = clampi(step_idx + dir, 0, (int)(sizeof step_list / sizeof step_list[0]) - 1); break;
+    case MI_MODE: mode = (mode + dir + NMODES) % NMODES; audio_close(); radio_mode(); break;
+    case MI_TOT: tot_idx = clampi(tot_idx + dir, 0, (int)(sizeof tot_list / sizeof tot_list[0]) - 1); break;
+    case MI_BL: bl_idx = clampi(bl_idx + dir, 0, 4); backlight(bl_list[bl_idx]); break;
+    }
+}
+
+/* # in a tone item: jump to the start of the next tone type (off, CTCSS, DCS normal, DCS inverted). */
+static void menu_jump(int item)
+{
+    if (item != MI_TXTONE && item != MI_RXTONE) return;
+    int *ty = item == MI_TXTONE ? &tone_type : &rx_tone_type;
+    uint16_t *va = item == MI_TXTONE ? &tone_val : &rx_tone_val;
+    static const int start[4] = { 0, 1, 51, 156 };
+    tone_from_index(start[(*ty + 1) % 4], ty, va);
+    if (item == MI_RXTONE && !tx_on) rx_tone();
+}
+
+/* Value before an edit, restored by the red bar. */
+static struct { int power, mic, tt, rt, sq, step, mode, tot, bl; uint16_t tv, rv; uint32_t freq; } menu_old;
+static void menu_snapshot(void)
+{
+    menu_old.freq = freq10;
+    menu_old.power = power; menu_old.mic = mic_gain; menu_old.tt = tone_type; menu_old.tv = tone_val;
+    menu_old.rt = rx_tone_type; menu_old.rv = rx_tone_val; menu_old.sq = sq_level; menu_old.step = step_idx;
+    menu_old.mode = mode; menu_old.tot = tot_idx; menu_old.bl = bl_idx;
+}
+static void menu_restore(void)
+{
+    if (freq10 != menu_old.freq) radio_tune(menu_old.freq);
+    power = menu_old.power; mic_gain = menu_old.mic; tone_type = menu_old.tt; tone_val = menu_old.tv;
+    rx_tone_type = menu_old.rt; rx_tone_val = menu_old.rv; sq_level = menu_old.sq; step_idx = menu_old.step;
+    tot_idx = menu_old.tot;
+    if (mode != menu_old.mode) { mode = menu_old.mode; audio_close(); radio_mode(); }
+    if (bl_idx != menu_old.bl) { bl_idx = menu_old.bl; backlight(bl_list[bl_idx]); }
+    if (!tx_on) rx_tone();
+}
+
+#define MENU_ROWS  5
+#define MENU_Y0    76
+#define MENU_PITCH 44
+#define MENU_ROW_H 40
+#define Y_SOFT     296
+#define C_EDIT     RGB(0, 210, 0)
+static int menu_top;
+
+/* One row: white on black; selected = black on white; being changed = black on green. */
+static void menu_row(int item)
+{
+    int slot = item - menu_top;
+    if (slot < 0 || slot >= MENU_ROWS) return;
+    int y = MENU_Y0 + slot * MENU_PITCH, sel = item == menu_sel;
+    uint16_t bg = sel ? (menu_edit ? C_EDIT : C_WHITE) : C_BLACK, fg = sel ? C_BLACK : C_WHITE;
+    if (sel) {
+        lcd_fill(0, y, 6, MENU_ROW_H, C_BLACK);
+        lcd_fill(LCD_W - 6, y, 6, MENU_ROW_H, C_BLACK);
+        lcd_fill(6, y, 4, 4, C_BLACK);
+        lcd_fill(LCD_W - 10, y, 4, 4, C_BLACK);
+        lcd_fill(6, y + MENU_ROW_H - 4, 4, 4, C_BLACK);
+        lcd_fill(LCD_W - 10, y + MENU_ROW_H - 4, 4, 4, C_BLACK);
+        fill_rrect(6, y, LCD_W - 12, MENU_ROW_H, bg);
+    } else {
+        lcd_fill(0, y, LCD_W, MENU_ROW_H, C_BLACK);
+    }
+    int ty = y + (MENU_ROW_H - F_MED->height) / 2;
+    char nm[16] = { (char)(item < 9 ? '1' + item : '0'), '.', ' ' };
+    for (int k = 0; menu_name[item][k]; k++) { nm[3 + k] = menu_name[item][k]; nm[4 + k] = 0; }
+    aa_text(16, ty, F_MED, nm, fg, bg);
+    char v[16];
+    menu_value(item, v);
+    aa_text(LCD_W - 18 - aa_width(F_MED, v), ty, F_MED, v, fg, bg);
+}
+
+static void menu_rows(void)
+{
+    for (int k = 0; k < MENU_ROWS; k++) menu_row(menu_top + k);
+}
+
+/* Move the selection; scroll only when it leaves the visible rows. */
+static void menu_select(int item)
+{
+    int old = menu_sel;
+    menu_sel = item;
+    int top = menu_top;
+    if (item < top) top = item;
+    if (item >= top + MENU_ROWS) top = item - MENU_ROWS + 1;
+    if (top != menu_top) { menu_top = top; menu_rows(); }
+    else { menu_row(old); menu_row(item); }
+}
+
+/* Labels over the keys under the screen: green bar (left) and red bar (right). */
+static void soft_keys(const char *left, const char *right)
+{
+    lcd_fill(0, Y_SOFT, LCD_W, LCD_H - Y_SOFT, C_BLACK);
+    int wl = aa_width(F_SMALL, left) + 24, wr = aa_width(F_SMALL, right) + 24, h = LCD_H - Y_SOFT - 2;
+    fill_rrect(6, Y_SOFT, wl, h, C_EDIT);
+    aa_text(6 + 12, Y_SOFT + (h - F_SMALL->height) / 2, F_SMALL, left, C_BLACK, C_EDIT);
+    fill_rrect(LCD_W - 6 - wr, Y_SOFT, wr, h, RGB(230, 0, 0));
+    aa_text(LCD_W - 6 - wr + 12, Y_SOFT + (h - F_SMALL->height) / 2, F_SMALL, right, C_WHITE, RGB(230, 0, 0));
+}
+
+static void menu_show(void)
+{
+    menu_open = 1;
+    menu_edit = 0;
+    clear_band(34, MENU_Y0);
+    aa_text_c(42, F_MED, "MENU", C_WHITE, C_BLACK);
+    separator(70);
+    for (int k = 0; k < MENU_ROWS; k++) clear_band(MENU_Y0 + k * MENU_PITCH + MENU_ROW_H, MENU_Y0 + (k + 1) * MENU_PITCH);
+    clear_band(MENU_Y0 + MENU_ROWS * MENU_PITCH, Y_SOFT);
+    menu_rows();
+    soft_keys("OK", "EXIT");
+}
+
+static void menu_close(void)
+{
+    menu_open = 0;
+    menu_edit = 0;
+    draw_home();
+}
+
+static void menu_key(char k)
+{
+    if (!menu_edit) {
+        if (k == K_UP) menu_select((menu_sel + MI_COUNT - 1) % MI_COUNT);
+        else if (k == K_DOWN) menu_select((menu_sel + 1) % MI_COUNT);
+        else if (k == K_MENU) { menu_snapshot(); menu_edit = 1; menu_row(menu_sel); }
+        else if (k >= '0' && k <= '9' && (k == '0' ? 9 : k - '1') < MI_COUNT) { menu_snapshot(); menu_edit = 1; menu_select(k == '0' ? 9 : k - '1'); }
+        else if (k == K_EXIT) menu_close();
+        return;
+    }
+    if (k == K_UP || k == K_DOWN) menu_change(menu_sel, k == K_UP ? 1 : -1);
+    else if (k == '#') menu_jump(menu_sel);
+    else if (k == K_MENU) menu_edit = 0;
+    else if (k == K_EXIT) { menu_restore(); menu_edit = 0; menu_rows(); return; }
+    else return;
+    if (menu_sel == MI_BAND) menu_rows(); else menu_row(menu_sel);
 }
 
 /* ---------------- commands ---------------- */
@@ -1429,6 +1771,9 @@ static void command(char *cmd)
             show_chips();
         }
         uart_puts("MIC "); put_dec(mic_gain); uart_puts("\r\n");
+    } else if (!__builtin_strcmp(cmd, "CLK")) {
+        uart_puts("CLK "); put_dec((int32_t)(system_core_clock / 1000000u));
+        uart_puts(" MHZ, BOOTLOADER LEFT "); put_dec((int32_t)(boot_clock / 1000000u)); uart_puts(" MHZ\r\n");
     } else if (!__builtin_strcmp(cmd, "HELP")) {
         uart_puts("PING, VER, F [MHz], M FM|NFM|AM|USB, RSSI, SQ 0-9, VOL 0-63, MIC [0-31], POW [MIN|LOW|MID|HIGH], T [OFF|67.0|D023N|D023I], RT [same, receive], ADC, R1 xx, R2 xx. TX: PTT1 voice, alarm button 1750 Hz, amateur bands only.\r\n");
     } else {
@@ -1467,6 +1812,8 @@ int main(void)
     bk_pins();
     bk1_write(0x00, 0x8000);
     tx_kill();
+    clock_config();
+    SysTick_Config(system_core_clock / 1000);
     gpio_bits_set(GPIOF, GPIO_PINS_0);
     pin_out(GPIOF, GPIO_PINS_0);
 
@@ -1494,7 +1841,7 @@ int main(void)
     adc_setup();
     lcd_init();
     lcd_fill(0, 0, LCD_W, LCD_H, C_BLACK);
-    backlight(255);
+    backlight(bl_list[bl_idx]);
     splash();
     top_bar();
 
@@ -1514,6 +1861,7 @@ int main(void)
     int elen = 0;
     uint16_t last_m = 0;
     int last_key = 0, tx_lockout = 0, alarm_count = 0;
+    uint32_t rep_at = 0;
     uint32_t tx_until = 0;
     uint32_t next_scan = 0, next_rssi = 0, next_sq = 0, next_batt = 10000;
     int last_rssi = -160, last_noise = 127, open_count = 0, close_count = 0, last_side = SIDE_NONE;
@@ -1543,15 +1891,16 @@ int main(void)
             if (tx_on && (!key || (int32_t)(ticks - tx_until) >= 0)) {
                 if (key) tx_lockout = 1;
                 tx_stop();
-                show_status(tx_lockout ? "RX (TOT 60 S)" : "RX", tx_lockout ? C_YELLOW : C_GREEN);
-                uart_puts(tx_lockout ? "TX OFF TOT 60 S\r\n" : "TX OFF\r\n");
+                show_status(tx_lockout ? "RX (TIME-OUT)" : "RX", tx_lockout ? C_YELLOW : C_GREEN);
+                uart_puts(tx_lockout ? "TX OFF TOT\r\n" : "TX OFF\r\n");
             } else if (tx_on && alarm != tx_burst) {
                 tx_audio(alarm);
                 show_tx();
                 uart_puts(alarm ? "TX 1750\r\n" : "TX VOICE\r\n");
             } else if (key && !last_key && !tx_on && !tx_lockout) {
+                if (menu_open) menu_close();
                 if (tx_start(alarm)) {
-                    tx_until = ticks + TX_MAX_MS;
+                    tx_until = ticks + (uint32_t)tot_list[tot_idx] * 1000u;
                     show_tx();
                     uart_puts(alarm ? "TX ON 1750\r\n" : "TX ON\r\n");
                 } else {
@@ -1564,11 +1913,17 @@ int main(void)
 
             uint16_t m = keys_matrix();
             uint16_t pressed = m & (uint16_t)~last_m;
+            const uint16_t rep_keys = (1u << 1) | (1u << 2);   /* up, down repeat when held */
+            if (m & rep_keys) {
+                if (!(last_m & m & rep_keys)) rep_at = ticks + 450;
+                else if ((int32_t)(ticks - rep_at) >= 0) { pressed |= m & rep_keys; rep_at = ticks + 90; }
+            }
             last_m = m;
             for (int b = 0; b < 16 && !tx_on; b++) {
                 if (!(pressed & (1u << b))) continue;
                 char k = key_char[b];
                 int changed = 0;
+                if (menu_open) { menu_key(k); continue; }
                 if (k >= '0' && k <= '9') {
                     if (elen < 7) { entry[elen++] = k; entry[elen] = 0; }
                     show_entry(entry);
@@ -1583,16 +1938,14 @@ int main(void)
                     changed = radio_tune(khz * 100);
                     if (!changed) show_status("BAD FREQUENCY", C_YELLOW);
                 } else if (k == '*') {
-                    changed = radio_tune(44600625);          /* PMR446 channel 1, 446.00625 MHz */
+                    /* toggle the 2 m and 70 cm calling frequencies */
+                    changed = radio_tune(freq10 == 14550000 ? 43350000 : 14550000);
                     if (changed) { mode = MODE_NFM; radio_mode(); }
                 } else if (k == K_UP || k == K_DOWN) {
-                    uint32_t f = k == K_UP ? freq10 + 1250 : freq10 - 1250;
+                    uint32_t f = k == K_UP ? freq10 + step_list[step_idx] : freq10 - step_list[step_idx];
                     changed = radio_tune(f);
                 } else if (k == K_MENU) {
-                    mode = (mode + 1) % NMODES;
-                    audio_close();
-                    radio_mode();
-                    changed = 1;
+                    menu_show();
                 }
                 if (changed) {
                     show_freq();
