@@ -4,11 +4,11 @@ I got sick of people selling simple knowledge or "personalised" firmware.  open 
 
 Open firmware for the iRadio UV-98 Plus handheld (Radtel RT-880G family, FCC ID 2AZSA-6D880), written from scratch, plus the tools to flash it and control the radio from a computer over the programming cable, and a satellite tracker that tunes the radio to downlinks.
 
-**Status: experimental (test 21), run on one UV-98 Plus only.** The firmware reads the radio's own calibration (frequency correction, deviation, power levels) from its SPI flash, with our radio's values built into `firmware/src/main.c` as a fallback.
+**Status: experimental (test 22), run on one UV-98 Plus only.** The firmware reads the radio's own calibration (frequency correction, deviation, power levels) from its SPI flash, with our radio's values built into `firmware/src/main.c` as a fallback.
 
 ## Features
 
-Each feature says whether it has been tested on the radio, and with which test build. "Not tested yet" means no test on the radio has been recorded. Test 21 is on our radio now; nothing has been re-tested on it yet.
+Each feature says whether it has been tested on the radio, and with which test build. "Not tested yet" means no test on the radio has been recorded. Test 22 is on our radio now.
 
 ### Receiving
 
@@ -41,7 +41,11 @@ Each feature says whether it has been tested on the radio, and with which test b
   *Tested: 2 m and 70 cm, heard on a UV-5R (tests 8-11). Not tested yet: the other bands.*
 - **Marine VHF, MID power at most:** 156.000-162.025 MHz.
   *Not tested yet.*
-- **Power LOW, MID, HIGH:** each level comes from the radio's own calibration, with the band's amplifier on, as stock does. Default LOW. Menu RX/TX, Power, or `POW LOW`. In channel mode each channel uses its own power.
+- **CB, MID power at most:** 26.965-27.405 MHz (the 40 channels), narrow FM.
+  *Not tested yet.*
+- **PMR446, LOW power only:** 446.0-446.2 MHz.
+  *Transmit on 446.00625 was tested at LOW in tests 8-11; the LOW-only limit is new in test 22.*
+- **Power LOW, MID, HIGH:** each level comes from the radio's own calibration, with the band's amplifier on, as stock does. Default MID (when no settings are saved). CB and marine are limited to MID, PMR446 to LOW. Menu RX/TX, Power, or `POW MID`. In channel mode each channel uses its own power, within the same limits.
   *Partly tested: the battery voltage drops more at each level (test 11). The output in watts has not been measured.*
 - **Transmit tone (CTCSS and DCS):** menu RX/TX, TX tone, with `#` jumping to the next tone type. Over the cable: `T 88.5`, `T D023N`, `T D023I`, `T OFF`.
   *Tested: each decoded by a UV-5R (test 11).*
@@ -49,7 +53,7 @@ Each feature says whether it has been tested on the radio, and with which test b
   *Tested (tests 10-11).*
 - **Repeater shift and offset:** menu RX/TX, Shift (off, + or -) and Offset (100 kHz, 500 kHz, 600 kHz, 1, 1.6, 5, 6, 7.6 or 12 MHz), or `SHIFT -` and `OFFSET 0.6`.
   *Partly tested: the transmit frequency was checked over the cable (test 15). Not tested yet on the air.*
-- **Reverse:** with a shift set, a short press of `#` (with nothing typed) listens on the repeater input; press it again to swap back. On a split channel it swaps receive and transmit.
+- **Reverse:** with a shift set, holding `#` for 1.5 seconds listens on the repeater input; hold it again to swap back. On a split channel it swaps receive and transmit.
   *Not tested yet.*
 - **Mic gain:** 0-31, default 25. Menu Audio, Mic gain, or `MIC 25`; over the cable it also works while transmitting.
   *Tested at 25 (test 11).*
@@ -61,7 +65,7 @@ Each feature says whether it has been tested on the radio, and with which test b
 ### On the radio
 
 - **VFO A and VFO B:** two VFOs, each with its own frequency, mode, step, shift, offset and tones. The main one is at the top; the other is on a small line under the main frequency, receive only. A short press of `*` swaps them. Over the cable: `VFO A` / `VFO B`.
-  *Partly tested: switching over the cable (test 15). Not tested yet: the `*` key.*
+  *Tested: switching over the cable (test 15), the `*` key by you (test 21).*
 - **Menu in groups:** see [Using the radio](#using-the-radio).
   *Not tested yet.*
 - **Tuning step:** 0.1, 1, 2.5, 5, 6.25, 10, 12.5, 25, 50 or 100 kHz, default 12.5 kHz. Menu RX/TX, Step.
@@ -71,7 +75,7 @@ Each feature says whether it has been tested on the radio, and with which test b
 - **Backlight timeout:** turns the screen and keypad light off after 10, 20, 30 or 60 seconds without use, or never (the default). The first key press only wakes the screen. Menu Settings, Light off.
   *Not tested yet.*
 - **Key lock:** hold `*` (the key with the lock symbol) for 1.5 seconds to lock or unlock the keys. PTT still works while locked.
-  *Not tested yet (on `*` since test 21).*
+  *Tested by you (test 21).*
 - **Low battery warning:** shows LOW BATTERY when the battery drops to 6.8 V.
   *Not tested yet.*
 - **Boot splash and screen:** M0FCC inverted in the middle, then "iRadio UV98+" and "Open Firmware v1.0". High-contrast screen with smooth fonts. The screen style can be changed over the cable with `FONT 1|2`, `EDGE 0-3` and `PAL 1|2`.
@@ -83,8 +87,9 @@ Each feature says whether it has been tested on the radio, and with which test b
 
 ### Channels
 
-- **Channel mode:** uses the channels already in the radio, as programmed by the stock software or CHIRP: frequency, split, mode, tones, power and name. Holding `#` (the V/M key) for 1.5 seconds, or menu Memory, VFO / CH, switches between VFO and channel mode; menu Memory, Channel steps through the used channels. Up/down step through the used channels; type a channel number and `#` to jump to it. Over the cable: `CH 17`, `CHLIST`, `VFOMODE`.
-  *Partly tested: `CHLIST` lists the radio's channels (test 18, over the cable). Not tested yet: the keys (V/M on `#` since test 21).*
+- **Channel mode:** uses the channels already in the radio, as programmed by the stock software or CHIRP: frequency, split, mode, tones, power and name. A short press of `#` (the V/M key), or menu Memory, VFO / CH, switches between VFO and channel mode; menu Memory, Channel steps through the used channels. Up/down step through the used channels; type a channel number and `#` to jump to it. Over the cable: `CH 17`, `CHLIST`, `VFOMODE`.
+  Channels marked "Only Rx" in CHIRP never transmit.
+  *Partly tested: `CHLIST` lists the radio's channels (test 18, over the cable); V/M on `#` tested by you (tests 21-22). Not tested yet: up/down and a number + `#` in channel mode.*
 - **Programming with CHIRP or the stock CPS:** the firmware answers the stock programming protocol, so CHIRP (model Radtel RT-880G) and iRadio's CPS can read and write the channels. After a write, the radio restarts.
   *Not tested yet.*
 
@@ -101,7 +106,7 @@ Each feature says whether it has been tested on the radio, and with which test b
 - **Register access for experiments:** `R1 xx` / `R2 xx` read a register on radio chip 1 or 2; `W1 reg value` writes one on chip 1 (transmit registers are refused). `SPIID` and `SPIRD` read the flash chip.
   *Tested (test 16).*
 
-**Not included:** FM broadcast, LSB.
+**Not included:** LSB, and the LW, MW, SW and FM broadcast reception listed in the radio's specification.
 
 ## What you need
 
@@ -175,7 +180,7 @@ Switch the radio on normally, then off **without pressing PTT** (see [Known prob
 
 ```sh
 .venv/bin/python tools/flash.py probe --model uv98                 # optional: connect only, erases nothing
-.venv/bin/python tools/flash.py flash --model uv98 --image bin/uv98plus_openfw_test21.bin --yes
+.venv/bin/python tools/flash.py flash --model uv98 --image bin/uv98plus_openfw_test22.bin --yes
 ```
 
 It takes about 30 seconds: 246 blocks of 1 KB, each acknowledged. When it prints `final reply 6`, switch the radio off and on normally. To go back to stock, flash `uv98plus_V1.16_250915.bin` the same way.
@@ -187,8 +192,8 @@ The flasher checks the image before sending it and writes only the application a
 | Key | Action |
 |---|---|
 | 0-9, then # | Type a frequency in kHz and tune to it (red bar clears the entry). In channel mode: go to that channel number |
-| # (nothing typed) | Reverse: listen on the repeater input (or on a split channel's transmit frequency); press again to swap back |
-| # held 1.5 s (V/M) | Switch between VFO mode and channel mode |
+| # (nothing typed, V/M) | Switch between VFO mode and channel mode |
+| # held 1.5 s | Reverse: listen on the repeater input (or on a split channel's transmit frequency); hold again to swap back |
 | * | Swap VFO A and VFO B (each keeps its frequency, mode, step, shift, offset and tones). The main VFO is at the top; the other is on the small line under the main frequency, receive only. In channel mode it goes back to VFO mode first |
 | * held 1.5 s (lock symbol) | Lock or unlock the keys (PTT still works) |
 | Up / down | Tune by the step set in the menu (12.5 kHz by default); held, it repeats. In channel mode: next / previous used channel |
@@ -221,7 +226,7 @@ The groups and their items:
 | `M FM\|NFM\|AM\|USB` | Set the mode |
 | `SQ 0-9`, `VOL 0-63` | Squelch level (0 = open), receive audio level |
 | `MIC [0-31]` | Show or set the mic gain (default 25); works while transmitting |
-| `POW [LOW\|MID\|HIGH]` | Show or set the transmit power (default LOW) |
+| `POW [LOW\|MID\|HIGH]` | Show or set the transmit power (default MID) |
 | `T [OFF\|88.5\|D023N\|D023I]` | Transmit tone: CTCSS in Hz, or DCS normal / inverted |
 | `RT [OFF\|88.5\|D023N\|D023I]` | Receive tone squelch (FM / NFM) |
 | `SHIFT [OFF\|+\|-]`, `OFFSET [MHz]` | Repeater shift and offset |
@@ -259,8 +264,11 @@ In the program, choose Hamlib model 2 ("NET rigctl") at `localhost:4532`. It sup
 
 - **Allowed:** amateur bands of all three ITU regions that the radio chip can tune: 17 m, 15 m, 12 m, 10 m, 8 m, 6 m, 4 m, 2 m, 1.25 m, 70 cm, 33 cm and 23 cm. See `tx_ranges` in `firmware/src/main.c`.
 - **Marine VHF** 156.000-162.025 MHz, capped at MID power. Marine use normally needs a marine licence and type-approved equipment.
-- **Everything else is refused,** including the air band. Whether the radio actually radiates on HF, 6 m, 4 m, 33 cm and 23 cm has not been tested.
-- **Power:** LOW by default. LOW, MID and HIGH use the radio's calibration with the band's amplifier on, as stock does.
+- **CB** 26.965-27.405 MHz, capped at MID power, narrow FM.
+- **PMR446** 446.0-446.2 MHz, LOW power only.
+- **Channels marked "Only Rx"** never transmit.
+- **Everything else is refused,** including the air band. Whether the radio actually radiates on HF, CB, 6 m, 4 m, 33 cm and 23 cm has not been tested.
+- **Power:** MID by default. LOW, MID and HIGH use the radio's calibration with the band's amplifier on, as stock does.
 - **Time-out timer:** 60 seconds by default (menu), then locked out until the key is released. Watchdog on.
 
 Check your local rules before transmitting.

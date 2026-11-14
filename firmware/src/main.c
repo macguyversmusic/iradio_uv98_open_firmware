@@ -6,7 +6,7 @@
 #include <stddef.h>
 #include "fonts_aa.h"
 
-#define FW_NAME  "UV98+ open test 21"
+#define FW_NAME  "UV98+ open test 22"
 #define APP_BASE 0x08002800u
 
 static void report_freq(void);
@@ -669,29 +669,31 @@ static uint16_t cal_dev(uint32_t f, int narrow)
     return i >= 0 ? le16(cal_blk[cal_map[i].blk] + (narrow ? 10 : 3)) : 0x34E2;
 }
 
-/* Transmit is allowed only inside these ranges (10 Hz units, [lo, hi)): the amateur allocations of
- * all three ITU regions that this chip can tune (all power levels), and marine VHF (capped at MID,
- * meant as about 5 W; not measured). Air band and everything else: no transmit. */
+/* Transmit is allowed only inside these ranges (10 Hz units, [lo, hi), first match), each with its
+ * highest power level: the amateur allocations of all three ITU regions that this chip can tune,
+ * CB and marine VHF at MID at most, PMR446 at LOW. Air band and everything else: no transmit. */
 static const struct { uint32_t lo, hi; uint8_t maxpow; } tx_ranges[] = {
     { 1806800, 1816800, 3 },   /* 17 m   18.068-18.168 */
     { 2100000, 2145000, 3 },   /* 15 m   21.000-21.450 */
     { 2489000, 2499000, 3 },   /* 12 m   24.890-24.990 */
+    { 2696500, 2740501, 2 },   /* CB     26.965-27.405 (40 channels), MID at most */
     { 2800000, 2970000, 3 },   /* 10 m   28.000-29.700 */
     { 4066000, 4070000, 3 },   /* 8 m    40.660-40.700 (some Region 1 countries) */
     { 5000000, 5400000, 3 },   /* 6 m    50-54 */
     { 6990000, 7050000, 3 },   /* 4 m    69.9-70.5 (some Region 1 countries) */
     { 14400000, 14800000, 3 },   /* 2 m    144-148 */
+    { 15600000, 16202500, 2 },   /* marine VHF 156.000-162.025, MID at most */
     { 21900000, 22500000, 3 },   /* 1.25 m 219-225 (Region 2) */
-    { 42000000, 45000000, 3 },   /* 70 cm  420-450 (includes PMR446) */
+    { 44600000, 44620000, 1 },   /* PMR446 446.0-446.2, LOW only (before 70 cm) */
+    { 42000000, 45000000, 3 },   /* 70 cm  420-450 */
     { 90200000, 92800000, 3 },   /* 33 cm  902-928 (Region 2) */
     { 124000000, 130000000, 3 },   /* 23 cm  1240-1300 */
-    {  15600000,  16202500, 2 },   /* marine VHF 156.000-162.025, MID at most */
 };
-/* Transmit power LOW (the default), MID, HIGH: stock levels (0x80053F0 / 0x8004F0C) from this radio's
+/* Transmit power LOW, MID (the default), HIGH: stock levels (0x80053F0 / 0x8004F0C) from this radio's
  * calibration, with the band's amplifier on. Numbered 1-3 (saved settings, channel power, band caps). */
 enum { PWR_LOW = 1, PWR_MID, PWR_HIGH };
 static const char *const power_name[] = { "LOW", "LOW", "MID", "HIGH" };
-static int power = PWR_LOW;
+static int power = PWR_MID;
 #define TX_POWER_NOCAL ((8u << 10) | 0xFF)   /* radio chip only, if a frequency has no power calibration */
 
 /* This radio's power calibration (SPI 0x20 + block * 0x70: +0x10 high, +0x20 low), one entry per
@@ -999,6 +1001,7 @@ static uint32_t serial_ptt_until;
 /* Channel mode (the stock channels in SPI flash, read only): the channel's own TX frequency. */
 static int chan_mode, chan_num;        /* chan_num 0-1023 */
 static uint32_t chan_txf;
+static int chan_rxonly;                /* channel +1 = 1: "Only Rx" (CHIRP Limit Rx/Tx), no transmit */
 static int vfo_power;                  /* menu power in VFO mode, kept while a channel uses its own */
 static char chan_name[17];
 
@@ -1080,7 +1083,7 @@ static int tx_start(int burst)
     uint32_t tf = tx_freq();
     const band_t *b = band_of(tf);
     int allow = tx_allowed(tf);
-    if (!b || !allow) return 0;
+    if (!b || !allow || (chan_mode && chan_rxonly)) return 0;
     tx_f = tf;
     tx_power = power < allow - 1 ? power : allow - 1;
     audio_close();
@@ -1103,7 +1106,7 @@ static int tx_start(int burst)
     bk1_write(0x70, 0x0000);                                     /* no tone */
     bk1_write(0x74, cal_ok ? af3k[cal_hdr[9]] : 0xE61C);          /* TX 3 kHz response */
     bk1_write(0x7D, (uint16_t)(0xE940 + mic_gain));
-    bk1_write(0x40, cal_dev(tf, mode == MODE_NFM));
+    bk1_write(0x40, cal_dev(tf, mode == MODE_NFM || (tf >= 2696500 && tf < 2740501)));   /* narrow on CB */
     bk1_write(0x37, 0x1D0F);
     delay_ms(10);
     bk1_write(0x52, 0x028F);
@@ -1895,6 +1898,7 @@ static int chan_apply(int n)
     if (!band_of(rx)) return 0;
     chan_num = n;
     chan_txf = tx == 0xFFFFFFFFu ? rx : tx;
+    chan_rxonly = c[1] == 1;
     mode = c[0] == 1 ? MODE_AM : c[0] >= 2 ? MODE_USB : c[3] ? MODE_NFM : MODE_FM;
     tone_from_chan((uint16_t)(c[14] | c[15] << 8), &tone_type, &tone_val);
     tone_from_chan((uint16_t)(c[4] | c[5] << 8), &rx_tone_type, &rx_tone_val);
@@ -1962,6 +1966,23 @@ static void chan_leave(void)
 {
     chan_off();
     vfo_load(vfo_cur);                 /* the VFO's own frequency, mode and tones again */
+}
+
+/* Reverse: on a split channel swap receive and transmit; in VFO mode with a shift set, listen on the
+ * transmit frequency (the shift flips). Returns 1 if the frequency changed. */
+static int reverse_toggle(void)
+{
+    if (chan_mode) {
+        if (!chan_txf || chan_txf == freq10) return 0;
+        uint32_t r = freq10;
+        radio_tune(chan_txf);
+        chan_txf = r;
+        return 1;
+    }
+    if (!shift) return 0;
+    uint32_t f = tx_freq();
+    shift = -shift;
+    return radio_tune(f);
 }
 
 /* ---------------- saved settings (SPI flash sector 0xFC000) ---------------- */
@@ -2059,7 +2080,7 @@ static void set_load(void)
     const vfo_t *v = &vfos[vfo_cur];
     freq10 = v->freq; mode = v->mode % NMODES; step_idx = v->step; ofs_idx = v->ofs; shift = v->shift;
     tone_type = v->tt; tone_val = v->tv; rx_tone_type = v->rt; rx_tone_val = v->rv;
-    power = vfo_power = (s.power & 3) ? (s.power & 3) : PWR_LOW; mic_gain = s.mic & 31; sq_level = s.sq % 10; tot_idx = s.tot; bl_idx = s.bl % 5;
+    power = vfo_power = (s.power & 3) ? (s.power & 3) : PWR_MID; mic_gain = s.mic & 31; sq_level = s.sq % 10; tot_idx = s.tot; bl_idx = s.bl % 5;
     light_idx = s.light; edge = s.edge & 3; P = &palettes[s.pal & 1];
     F_MED = s.font == 1 ? &font_med : &font_med2; F_SMALL = s.font == 1 ? &font_small : &font_small2;
     for (int i = 0; i < NRXBANDS; i++) band_freq[i] = s.band_freq[i];
@@ -2687,7 +2708,7 @@ static void command(char *cmd)
         }
         uart_puts("OFFSET "); uart_puts(ofs_name[ofs_idx]); uart_puts("\r\n");
     } else if (!__builtin_strcmp(cmd, "PTT ON")) {
-        if (!tx_allowed(tx_freq())) { uart_puts("ERR transmit not allowed on this frequency\r\n"); return; }
+        if (!tx_allowed(tx_freq()) || (chan_mode && chan_rxonly)) { uart_puts("ERR transmit not allowed on this frequency\r\n"); return; }
         serial_ptt = 1;
         serial_ptt_until = ticks + SERIAL_PTT_MS;
         uart_puts("PTT ON\r\n");
@@ -2804,7 +2825,7 @@ static void command(char *cmd)
         uart_puts("CLK "); put_dec((int32_t)(system_core_clock / 1000000u));
         uart_puts(" MHZ, BOOTLOADER LEFT "); put_dec((int32_t)(boot_clock / 1000000u)); uart_puts(" MHZ\r\n");
     } else if (!__builtin_strcmp(cmd, "HELP")) {
-        uart_puts("PING, VER, F [MHz], M FM|NFM|AM|USB, RSSI, SQ 0-9, VOL 0-63, MIC [0-31], POW [LOW|MID|HIGH], T [OFF|67.0|D023N|D023I], RT [same, receive], SHIFT [OFF|+|-], OFFSET [MHz], VFO [A|B], PTT ON|OFF (repeat ON within 2 s), DW [ON|OFF], SCAN ON|OFF, FDET, CH [n], CHLIST [n], VFOMODE, SAVE, SETTINGS, CAL, SPIID, SPIRD, AGC, ADC, R1 xx, R2 xx. TX: PTT1 voice, alarm button 1750 Hz, amateur bands only.\r\n");
+        uart_puts("PING, VER, F [MHz], M FM|NFM|AM|USB, RSSI, SQ 0-9, VOL 0-63, MIC [0-31], POW [LOW|MID|HIGH], T [OFF|67.0|D023N|D023I], RT [same, receive], SHIFT [OFF|+|-], OFFSET [MHz], VFO [A|B], PTT ON|OFF (repeat ON within 2 s), DW [ON|OFF], SCAN ON|OFF, FDET, CH [n], CHLIST [n], VFOMODE, SAVE, SETTINGS, CAL, SPIID, SPIRD, AGC, ADC, R1 xx, R2 xx. TX: PTT1 voice, alarm button 1750 Hz; amateur bands, CB, marine and PMR446 only.\r\n");
     } else {
         uart_puts("ERR unknown command, try HELP\r\n");
     }
@@ -2988,8 +3009,9 @@ int main(void)
                 if ((m & green) && !(prev_m & green)) green_used = 0;
                 if (!(m & green) && (prev_m & green) && !green_used && !locked && lit) menu_show();
                 pressed &= (uint16_t)~green;
-                /* * (lock symbol) and # (V/M, nothing typed): short press acts on release; held 1.5 s,
-                 * * locks or unlocks the keys and # switches between VFO and channel mode. */
+                /* * (lock symbol) and # (V/M, nothing typed): short press acts on release. * short swaps
+                 * A/B, held 1.5 s locks or unlocks the keys; # short switches VFO / channel mode, held
+                 * 1.5 s turns reverse on or off. */
                 uint16_t hk = pressed & (star | (elen ? 0 : hash));
                 if (hk) { hold_key = (hk & star) ? star : hash; hold_since = ticks; hold_done = 0; pressed &= (uint16_t)~hk; }
                 if (hold_key && (m & hold_key) && !hold_done && (int32_t)(ticks - hold_since) >= 1500) {
@@ -2999,15 +3021,21 @@ int main(void)
                         show_status(locked ? "KEYS LOCKED" : "KEYS UNLOCKED", C_YELLOW);
                     } else if (locked) {
                         show_status("KEYS LOCKED", C_YELLOW);
-                    } else if (!tx_on) {
-                        int changed;
-                        if (chan_mode) { chan_leave(); changed = 1; }
-                        else changed = chan_enter();
-                        if (changed) { show_freq(); show_status("RX", C_GREEN); report_freq(); }
+                    } else if (!tx_on && reverse_toggle()) {
+                        show_freq(); show_status("RX", C_GREEN); report_freq();
                     }
                 }
                 if (hold_key && !(m & hold_key)) {
-                    if (!hold_done) pressed |= hold_key;   /* short press: the key's own action below */
+                    if (!hold_done && hold_key == hash && !locked) {
+                        if (!tx_on) {                      /* short #: VFO / channel mode */
+                            int changed;
+                            if (chan_mode) { chan_leave(); changed = 1; }
+                            else changed = chan_enter();
+                            if (changed) { show_freq(); show_status("RX", C_GREEN); report_freq(); }
+                        }
+                    } else if (!hold_done) {
+                        pressed |= hold_key;               /* short *: swap below; # while locked: KEYS LOCKED */
+                    }
                     hold_key = 0;
                 }
                 if (locked && pressed) { show_status("KEYS LOCKED", C_YELLOW); pressed = 0; }
@@ -3025,20 +3053,7 @@ int main(void)
                 } else if (k == K_EXIT) {
                     elen = 0; entry[0] = 0;
                     show_entry(entry);
-                } else if (k == '#' && !elen && chan_mode) {
-                    if (chan_txf && chan_txf != freq10) {      /* reverse on a split channel */
-                        uint32_t r = freq10;
-                        radio_tune(chan_txf);
-                        chan_txf = r;
-                        changed = 1;
-                    }
-                } else if (k == '#' && !elen) {
-                    if (shift) {
-                        uint32_t f = tx_freq();
-                        shift = -shift;
-                        changed = radio_tune(f);
-                    }
-                } else if (k == '#') {
+                } else if (k == '#' && elen) {
                     uint32_t khz = 0;
                     for (int i = 0; i < elen; i++) khz = khz * 10 + (uint32_t)(entry[i] - '0');
                     elen = 0; entry[0] = 0;
