@@ -763,7 +763,7 @@ static int bl_idx = 4;
 /* Backlight timeout (menu "Light off"); the keypad light (PA9) follows the backlight. */
 static const uint8_t light_list[] = { 0, 10, 20, 30, 60 };          /* seconds, 0 = always on */
 static const char *const light_name[] = { "ALWAYS", "10 s", "20 s", "30 s", "60 s" };
-static int light_idx = 0, lit = 1, locked, scanning, spectrum_on, fdet_on, dw_on, dw_hop, dw_wait_clear, dw_saved_power;
+static int light_idx = 0, lit = 1, locked, scanning, fdet_on, dw_on, dw_hop, dw_wait_clear, dw_saved_power;
 static uint32_t dw_next, dw_quiet_since, dw_freq;
 static uint32_t fdet_next, fdet_until;
 static uint32_t last_activity, scan_next, scan_hold_until;
@@ -1690,76 +1690,6 @@ static void scan_step(void)
 
 static void report_freq(void);
 
-/* Spectrum: 44 points around the current frequency at the menu step, signal strength as bars. */
-#define SPEC_N   44
-#define SPEC_TOP Y_CHIPS1
-#define SPEC_H   136
-static void spectrum_start(void)
-{
-    audio_close();
-    spectrum_on = 1;
-    lcd_fill(0, SPEC_TOP, LCD_W, Y_MSCALE + F_SMALL->height - SPEC_TOP, C_BLACK);
-    char s[32] = "SPECTRUM, STEP ";
-    int p = 15;
-    for (const char *q = step_name[step_idx]; *q; q++) s[p++] = *q;
-    s[p] = 0;
-    aa_text_c(SPEC_TOP + SPEC_H + 8, F_SMALL, s, P->dim, C_BLACK);
-}
-
-/* Signal strength at f in dBm, or SPEC_NONE if f cannot be tuned. After tuning, 0x67 reads about
- * -145 dBm for a few ms (measured over USB: -145 at 2 ms, steady by 16 ms), so wait until the reading
- * is up and has stopped rising, at most 30 ms. spec_settle adds up the waits. */
-#define SPEC_NONE 1000
-static uint32_t spec_settle;
-static int spec_point(uint32_t f)
-{
-    if (!radio_tune(f)) return SPEC_NONE;
-    int ms = 0, last = -100;
-    for (;;) {
-        int r = bk_read(0, 0x67) & 0x1FF;
-        if ((r >= 60 && r <= last + 4) || ms >= 30) break;      /* above -130 dBm and up by 2 dB or less */
-        last = r;
-        delay_ms(1);
-        ms++;
-    }
-    spec_settle += (uint32_t)ms;
-    return rssi_dbm();
-}
-
-/* One sweep, then the bars: height is dB above the sweep's median (the noise floor), 3 px per dB,
- * so an empty band is a low row and signals stand up from it. */
-static void spectrum_sweep(void)
-{
-    uint32_t center = freq10, st = step_list[step_idx];
-    int v[SPEC_N], sorted[SPEC_N], n = 0;
-    for (int i = 0; i < SPEC_N; i++) {
-        wdt_counter_reload();
-        v[i] = spec_point(center + (uint32_t)(i - SPEC_N / 2) * st);
-        if (v[i] != SPEC_NONE) {                               /* insertion sort for the median */
-            int k = n++;
-            while (k > 0 && sorted[k - 1] > v[i]) { sorted[k] = sorted[k - 1]; k--; }
-            sorted[k] = v[i];
-        }
-    }
-    radio_tune(center);
-    int floor = n ? sorted[n / 2] : 0;
-    for (int i = 0; i < SPEC_N; i++) {
-        int h = v[i] == SPEC_NONE ? 0 : (v[i] - floor + 3) * 3;
-        if (v[i] != SPEC_NONE && h < 1) h = 1;
-        if (h > SPEC_H) h = SPEC_H;
-        int x = 10 + i * 5;
-        lcd_fill(x, SPEC_TOP, 4, SPEC_H - h, C_BLACK);
-        if (h) lcd_fill(x, SPEC_TOP + SPEC_H - h, 4, h, i == SPEC_N / 2 ? C_YELLOW : C_WHITE);
-    }
-}
-
-static void spectrum_stop(void)
-{
-    spectrum_on = 0;
-    radio_tune(freq10);
-    draw_home();
-}
-
 /* Frequency detect (stock 0x8004B70 / 0x8004B24): the chip's frequency scan, 0x32 = 0x0B01; when 0x0D
  * bit 15 is clear, (0x0D & 0x7FF) << 16 | 0x0E + 0x8028 - calibration word is the frequency found. */
 static void fdet_start(void)
@@ -1849,7 +1779,7 @@ static void dw_start(void)
  * to it, dim with dual watch off. */
 static void show_vfo2(void)
 {
-    if (menu_open || spectrum_on) return;
+    if (menu_open) return;
     const vfo_t *v = &vfos[vfo_cur ^ 1];
     char s[28], f[16];
     int p = 0;
@@ -2264,17 +2194,17 @@ static void tone_from_index(int i, int *type, uint16_t *val)
 }
 
 enum { MI_BAND, MI_POWER, MI_TXTONE, MI_RXTONE, MI_SHIFT, MI_OFFSET, MI_SQ, MI_STEP, MI_MODE, MI_MIC, MI_TOT, MI_BL,
-       MI_LIGHT, MI_DW, MI_SCAN, MI_SPECTRUM, MI_FDET, MI_AGC, MI_CHMODE, MI_CHAN, MI_COUNT };
+       MI_LIGHT, MI_DW, MI_SCAN, MI_FDET, MI_AGC, MI_CHMODE, MI_CHAN, MI_COUNT };
 static const char *const menu_name[MI_COUNT] = {
     "Band", "Power", "TX tone", "RX tone", "Shift", "Offset", "Squelch", "Step", "Mode", "Mic gain", "Time-out", "Backlight",
-    "Light off", "Dual watch", "Scan", "Spectrum", "Freq detect", "AGC", "VFO / CH", "Channel" };
+    "Light off", "Dual watch", "Scan", "Freq detect", "AGC", "VFO / CH", "Channel" };
 /* The top level lists the groups; each group opens its own list, numbered from 1 (0 for the tenth). */
 typedef struct { const char *name; uint8_t n; uint8_t item[10]; } menu_group_t;
 static const menu_group_t menu_groups[] = {
     { "RX/TX",    10, { MI_BAND, MI_MODE, MI_POWER, MI_STEP, MI_SQ, MI_TXTONE, MI_RXTONE, MI_SHIFT, MI_OFFSET, MI_TOT } },
     { "Audio",     2, { MI_MIC, MI_AGC } },
     { "Memory",    2, { MI_CHMODE, MI_CHAN } },
-    { "Scan",      3, { MI_SCAN, MI_SPECTRUM, MI_FDET } },
+    { "Scan",      2, { MI_SCAN, MI_FDET } },
     { "Settings",  3, { MI_DW, MI_BL, MI_LIGHT } },
 };
 #define NGROUPS ((int)(sizeof menu_groups / sizeof menu_groups[0]))
@@ -2310,7 +2240,7 @@ static void menu_value(int item, char *s)
     case MI_BL: put2(s, bl_idx + 1); return;
     case MI_LIGHT: src = light_name[light_idx]; break;
     case MI_DW: src = dw_on ? "ON" : "OFF"; break;
-    case MI_SCAN: case MI_SPECTRUM: case MI_FDET: src = "Start"; break;
+    case MI_SCAN: case MI_FDET: src = "Start"; break;
     case MI_AGC: src = agc_on ? "ON" : "OFF"; break;
     case MI_CHMODE: src = chan_mode ? "CHANNEL" : "VFO"; break;
     case MI_CHAN: { int v = chan_num + 1, p = 0; char d[5]; int n = 0;
@@ -2357,7 +2287,7 @@ static void menu_change(int item, int dir)
     case MI_BL: bl_idx = clampi(bl_idx + dir, 0, 4); backlight(bl_list[bl_idx]); break;
     case MI_LIGHT: light_idx = clampi(light_idx + dir, 0, (int)sizeof light_list - 1); break;
     case MI_DW: if (dw_on) dw_stop(); else dw_start(); break;
-    case MI_SCAN: case MI_SPECTRUM: case MI_FDET: break;
+    case MI_SCAN: case MI_FDET: break;
     case MI_AGC: agc_on = !agc_on; break;
     case MI_CHMODE: if (chan_mode) chan_leave(); else chan_enter(); break;
     case MI_CHAN:
@@ -2500,7 +2430,6 @@ static void menu_enter(int row)
     if (menu_group < 0) { menu_last_group = row; menu_go(row, 0); return; }
     int item = menu_groups[menu_group].item[row];
     if (item == MI_SCAN) { menu_close(); scan_start(); }
-    else if (item == MI_SPECTRUM) { menu_open = 0; menu_edit = 0; draw_home(); spectrum_start(); }
     else if (item == MI_FDET) { menu_close(); fdet_start(); }
     else { menu_snapshot(); menu_edit = 1; if (row == menu_sel) menu_row(row); else menu_select(row); }
 }
@@ -2611,7 +2540,7 @@ static void command(char *cmd)
     if (dw_hop) {
         int query = 1;
         for (const char *q = cmd; *q; q++) if (*q == ' ') query = 0;
-        if (!__builtin_strcmp(cmd, "SPEC") || !__builtin_strcmp(cmd, "FDET") || !__builtin_strcmp(cmd, "VFOMODE") ||
+        if (!__builtin_strcmp(cmd, "FDET") || !__builtin_strcmp(cmd, "VFOMODE") ||
             !__builtin_strcmp(cmd, "SAVE")) query = 0;
         if (!query) { dw_hop_end(); show_status("RX", C_GREEN); }
     }
@@ -2794,18 +2723,6 @@ static void command(char *cmd)
     } else if (!__builtin_strcmp(cmd, "SCAN ON") || !__builtin_strcmp(cmd, "SCAN OFF")) {
         if (cmd[6] == 'N') scan_start(); else scan_stop();
         uart_puts(scanning ? "SCAN ON\r\n" : "SCAN OFF\r\n");
-    } else if (!__builtin_strcmp(cmd, "SPEC")) {
-        /* One sweep: 44 points around the current frequency at the menu step, dBm each. */
-        uint32_t center = freq10, st = step_list[step_idx];
-        audio_close();
-        int v[SPEC_N];
-        spec_settle = 0;
-        for (int i = 0; i < SPEC_N; i++) { wdt_counter_reload(); v[i] = spec_point(center + (uint32_t)(i - SPEC_N / 2) * st); }
-        radio_tune(center);
-        uart_puts("SPEC "); put_dec((int32_t)st); uart_puts("0 HZ STEP, WAIT "); put_dec((int32_t)spec_settle);
-        uart_puts(" MS IN ALL:");
-        for (int i = 0; i < SPEC_N; i++) { uart_puts(" "); if (v[i] == SPEC_NONE) uart_puts("X"); else put_dec(v[i]); }
-        uart_puts("\r\n");
     } else if (!__builtin_strcmp(cmd, "FDET")) {
         fdet_start();
         uart_puts("FDET STARTED (20 S)\r\n");
@@ -2858,7 +2775,7 @@ static void command(char *cmd)
         uart_puts("CLK "); put_dec((int32_t)(system_core_clock / 1000000u));
         uart_puts(" MHZ, BOOTLOADER LEFT "); put_dec((int32_t)(boot_clock / 1000000u)); uart_puts(" MHZ\r\n");
     } else if (!__builtin_strcmp(cmd, "HELP")) {
-        uart_puts("PING, VER, F [MHz], M FM|NFM|AM|USB, RSSI, SQ 0-9, VOL 0-63, MIC [0-31], POW [LOW|MID|HIGH], T [OFF|67.0|D023N|D023I], RT [same, receive], SHIFT [OFF|+|-], OFFSET [MHz], VFO [A|B], PTT ON|OFF (repeat ON within 2 s), DW [ON|OFF], SCAN ON|OFF, SPEC, FDET, CH [n], CHLIST [n], VFOMODE, SAVE, SETTINGS, CAL, SPIID, SPIRD, AGC, ADC, R1 xx, R2 xx. TX: PTT1 voice, alarm button 1750 Hz, amateur bands only.\r\n");
+        uart_puts("PING, VER, F [MHz], M FM|NFM|AM|USB, RSSI, SQ 0-9, VOL 0-63, MIC [0-31], POW [LOW|MID|HIGH], T [OFF|67.0|D023N|D023I], RT [same, receive], SHIFT [OFF|+|-], OFFSET [MHz], VFO [A|B], PTT ON|OFF (repeat ON within 2 s), DW [ON|OFF], SCAN ON|OFF, FDET, CH [n], CHLIST [n], VFOMODE, SAVE, SETTINGS, CAL, SPIID, SPIRD, AGC, ADC, R1 xx, R2 xx. TX: PTT1 voice, alarm button 1750 Hz, amateur bands only.\r\n");
     } else {
         uart_puts("ERR unknown command, try HELP\r\n");
     }
@@ -3001,7 +2918,6 @@ int main(void)
             } else if (key && !last_key && !tx_on && !tx_lockout) {
                 wake();
                 scan_stop();
-                if (spectrum_on) spectrum_stop();
                 if (fdet_on) fdet_stop();
                 if (menu_open) menu_close();
                 if (dw_hop) dw_hop_end();            /* transmit is always on the main VFO or channel */
@@ -3024,7 +2940,6 @@ int main(void)
                 int was_dark = !lit;
                 wake();
                 if (scanning) { scan_stop(); pressed = 0; }
-                if (spectrum_on) { spectrum_stop(); pressed = 0; }
                 if (fdet_on) { fdet_stop(); show_status("RX", C_GREEN); pressed = 0; }
                 if (dw_hop) { dw_hop_end(); show_status("RX", C_GREEN); }
                 if (was_dark) pressed = 0;                     /* the first press only wakes the screen */
@@ -3035,9 +2950,10 @@ int main(void)
                 else if ((int32_t)(ticks - rep_at) >= 0) { pressed |= m & rep_keys; rep_at = ticks + 90; }
             }
             last_m = m;
+            const uint16_t green = 1u << 0;
+            if (menu_open && (pressed & green)) green_used = 1;   /* used by the menu: no reopening on release */
             if (!menu_open) {
                 /* Green bar on the home screen: held 1.5 s = key lock on/off, short = menu on release. */
-                const uint16_t green = 1u << 0;
                 if ((m & green) && !(prev_m & green)) { green_since = ticks; green_used = 0; }
                 if ((m & green) && !green_used && (int32_t)(ticks - green_since) >= 1500) {
                     green_used = 1;
@@ -3108,7 +3024,7 @@ int main(void)
         }
 
         /* Squelch every 50 ms; side keys force it open. */
-        if (!tx_on && !spectrum_on && !fdet_on && (int32_t)(ticks - next_sq) >= 0) {
+        if (!tx_on && !fdet_on && (int32_t)(ticks - next_sq) >= 0) {
             next_sq = ticks + 50;
             last_rssi = rssi_dbm();
             last_noise = bk_read(0, 0x65) & 0x7F;
@@ -3161,15 +3077,14 @@ int main(void)
             }
         }
 
-        if (!tx_on && !spectrum_on && (int32_t)(ticks - next_rssi) >= 0) {
+        if (!tx_on && (int32_t)(ticks - next_rssi) >= 0) {
             next_rssi = ticks + 300;
             show_rssi(last_rssi, last_noise);
         }
 
         if (scanning && !tx_on && !menu_open) scan_step();
-        if (spectrum_on && !tx_on) spectrum_sweep();
         if (fdet_on && !tx_on) fdet_poll();
-        if (dw_on && !tx_on && !menu_open && !scanning && !spectrum_on && !fdet_on) dw_poll();
+        if (dw_on && !tx_on && !menu_open && !scanning && !fdet_on) dw_poll();
 
         if (lit && light_list[light_idx] && !tx_on && !audio_on && !menu_open &&
             (int32_t)(ticks - last_activity) >= (int32_t)light_list[light_idx] * 1000) {
