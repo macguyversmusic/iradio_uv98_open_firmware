@@ -5,7 +5,7 @@
 #include "at32f423.h"
 #include "fonts_aa.h"
 
-#define FW_NAME  "UV98+ open test 15"
+#define FW_NAME  "UV98+ open test 16"
 #define APP_BASE 0x08002800u
 
 /* ---------------- timing ---------------- */
@@ -121,6 +121,29 @@ static void tx_kill(void)
     bk1_write(0x33, 0x0000);
     bk1_write(0x30, 0x0000);
     bk1_write(0x37, 0x1D00);
+}
+
+/* ---------------- supply monitor ---------------- */
+/* The power voltage monitor (PWC ctrl: PVMEN bit 4, threshold bits 7:5, 7 = 2.9 V) raises EXINT line 16
+ * when VDD falls below 2.9 V, as it does when the power knob is clicked off. The handler switches
+ * transmit off while the supply lasts, so the radio chip is not left transmitting (see FINDINGS). */
+#define PWC_CTRL    (*(volatile uint32_t *)0x40007000u)
+#define EXINT_REG   ((volatile uint32_t *)0x40013C00u)    /* inten, evten, polcfg1, polcfg2, swtrg, intsts */
+void PVM_IRQHandler(void)
+{
+    EXINT_REG[5] = 1u << 16;
+    tx_kill();
+    gpio_bits_reset(GPIOA, GPIO_PINS_14);
+}
+
+static void pvm_init(void)
+{
+    PWC_CTRL = (PWC_CTRL & ~0xF0u) | (7u << 5) | (1u << 4);
+    EXINT_REG[5] = 1u << 16;
+    EXINT_REG[2] |= 1u << 16;          /* rising edge of the PVM output = VDD below the threshold */
+    EXINT_REG[0] |= 1u << 16;
+    NVIC_SetPriority(PVM_IRQn, 0);
+    NVIC_EnableIRQ(PVM_IRQn);
 }
 
 /* ---------------- system clock ---------------- */
@@ -516,6 +539,128 @@ static const band_t bands[] = {
 };
 #define NBANDS (sizeof bands / sizeof bands[0])
 
+/* ---------------- SPI flash and calibration ---------------- */
+/* SPI2: PB13 SCK, PB14 MISO, PB15 MOSI (mux 5), PB12 chip select (driven high by stock 0x8010C74).
+ * Read only here: 0x9F (JEDEC ID) and 0x03 (read data). */
+static void flash_init(void)
+{
+    crm_periph_clock_enable(CRM_SPI2_PERIPH_CLOCK, TRUE);
+    gpio_bits_set(GPIOB, GPIO_PINS_12);
+    pin_out(GPIOB, GPIO_PINS_12);
+    pin_cfg(GPIOB, GPIO_PINS_13 | GPIO_PINS_14 | GPIO_PINS_15, GPIO_MODE_MUX, GPIO_PULL_NONE);
+    gpio_pin_mux_config(GPIOB, GPIO_PINS_SOURCE13, GPIO_MUX_5);
+    gpio_pin_mux_config(GPIOB, GPIO_PINS_SOURCE14, GPIO_MUX_5);
+    gpio_pin_mux_config(GPIOB, GPIO_PINS_SOURCE15, GPIO_MUX_5);
+    spi_init_type s;
+    spi_default_para_init(&s);
+    s.transmission_mode = SPI_TRANSMIT_FULL_DUPLEX;
+    s.master_slave_mode = SPI_MODE_MASTER;
+    s.mclk_freq_division = SPI_MCLK_DIV_8;
+    s.first_bit_transmission = SPI_FIRST_BIT_MSB;
+    s.frame_bit_num = SPI_FRAME_8BIT;
+    s.clock_polarity = SPI_CLOCK_POLARITY_LOW;
+    s.clock_phase = SPI_CLOCK_PHASE_1EDGE;
+    s.cs_mode_selection = SPI_CS_SOFTWARE_MODE;
+    spi_init(SPI2, &s);
+    spi_software_cs_internal_level_set(SPI2, SPI_SWCS_INTERNAL_LEVEL_HIGHT);
+    spi_enable(SPI2, TRUE);
+}
+
+static uint8_t flash_xfer(uint8_t b)
+{
+    while (spi_i2s_flag_get(SPI2, SPI_I2S_TDBE_FLAG) == RESET) { }
+    spi_i2s_data_transmit(SPI2, b);
+    while (spi_i2s_flag_get(SPI2, SPI_I2S_RDBF_FLAG) == RESET) { }
+    return (uint8_t)spi_i2s_data_receive(SPI2);
+}
+
+static void flash_read(uint32_t addr, uint8_t *buf, int n)
+{
+    gpio_bits_reset(GPIOB, GPIO_PINS_12);
+    flash_xfer(0x03);
+    flash_xfer((uint8_t)(addr >> 16));
+    flash_xfer((uint8_t)(addr >> 8));
+    flash_xfer((uint8_t)addr);
+    for (int i = 0; i < n; i++) buf[i] = flash_xfer(0xFF);
+    gpio_bits_set(GPIOB, GPIO_PINS_12);
+}
+
+static uint32_t flash_id(void)
+{
+    gpio_bits_reset(GPIOB, GPIO_PINS_12);
+    flash_xfer(0x9F);
+    uint32_t id = (uint32_t)flash_xfer(0xFF) << 16;
+    id |= (uint32_t)flash_xfer(0xFF) << 8;
+    id |= flash_xfer(0xFF);
+    gpio_bits_set(GPIOB, GPIO_PINS_12);
+    return id;
+}
+
+/* The radio's own calibration (stock 0x8013E3C / 0x8012A30): a 0x20-byte header at 0x0000 and sixteen
+ * 0x70-byte blocks from 0x0020. Per block: +0 frequency correction word, +3 deviation (wide), +10
+ * deviation (narrow), +0x10 high power and +0x20 low power entries (16 each, one per 5 MHz from the
+ * block's base). Header bytes 8-11: audio response indexes (TX 300 Hz, TX 3 kHz, RX 300 Hz, RX 3 kHz).
+ * It is used only if every block in use passes the checks in cal_load(); otherwise the values built
+ * in from our radio's backup are used. */
+static uint8_t cal_hdr[0x20], cal_blk[16][0x70];
+static int cal_ok;
+static uint32_t flash_jedec;
+static const struct { uint32_t lo, hi, base; uint8_t blk; } cal_map[] = {   /* inclusive, in stock's order */
+    {  13600000,  17400000,  13500000,  0 }, {  40000000,  48000000,  40000000,  1 },
+    {   1800000,   6400000,   1500000,  2 }, {   6400000,  13600000,   6000000,  3 },
+    {  17400000,  24000000,  17000000,  4 }, {  24000000,  32000000,  24000000,  5 },
+    {  32000000,  40000000,  32000000,  6 }, {  48000000,  56000000,  48000000,  7 },
+    {  56000000,  66000000,  56000000,  8 }, {  84000000,  92000000,  84000000,  9 },
+    {  92000000, 100000000,  92000000, 10 }, { 100000000, 108000000, 100000000, 11 },
+    { 108000000, 116000000, 108000000, 12 }, { 116000000, 124000000, 116000000, 13 },
+    { 124000000, 130000000, 124000000, 13 },
+};
+#define NCALMAP ((int)(sizeof cal_map / sizeof cal_map[0]))
+/* Audio response coefficients by index (stock 0x80038D0). */
+static const uint16_t af300[7][2] = { { 0x8BD7, 0x3507 }, { 0x8AED, 0x35E1 }, { 0x8A96, 0x3606 }, { 0x8908, 0x3779 },
+                                      { 0x8DDE, 0x335A }, { 0x8EB3, 0x32BA }, { 0x8F88, 0x3201 } };
+static const uint16_t af3k[5] = { 0xE61C, 0xDF22, 0xD42D, 0xCC35, 0xFA02 };
+
+static uint16_t le16(const uint8_t *b) { return (uint16_t)(b[0] | b[1] << 8); }
+
+static int cal_index(uint32_t f)
+{
+    if (!cal_ok) return -1;
+    for (int i = 0; i < NCALMAP; i++) if (f >= cal_map[i].lo && f <= cal_map[i].hi) return i;
+    return -1;
+}
+
+static void cal_load(void)
+{
+    cal_ok = 0;
+    flash_jedec = flash_id();
+    if ((flash_jedec >> 16) == 0x00 || (flash_jedec >> 16) == 0xFF) return;
+    flash_read(0, cal_hdr, sizeof cal_hdr);
+    flash_read(0x20, &cal_blk[0][0], sizeof cal_blk);
+    if (cal_hdr[8] > 6 || cal_hdr[9] > 4 || cal_hdr[10] > 6 || cal_hdr[11] > 4) return;
+    for (int i = 0; i < NCALMAP; i++) {
+        const uint8_t *b = cal_blk[cal_map[i].blk];
+        uint16_t w = le16(b), d3 = le16(b + 3), d10 = le16(b + 10);
+        if (w < 0x7E00 || w > 0x81FF || (d3 & 0xF000) != 0x3000 || (d10 & 0xF000) != 0x3000) return;
+        for (int k = 0; k < 32; k++) if (b[0x10 + k] > 0x3F) return;
+    }
+    cal_ok = 1;
+}
+
+/* Frequency correction word at f: from the radio's calibration, or the built-in band value. */
+static uint16_t cal_word(uint32_t f, uint16_t builtin)
+{
+    int i = cal_index(f);
+    return i >= 0 ? le16(cal_blk[cal_map[i].blk]) : builtin;
+}
+
+/* Transmit deviation at f (stock 0x8004996: +3 wide, +10 narrow); 0x34E2 built in. */
+static uint16_t cal_dev(uint32_t f, int narrow)
+{
+    int i = cal_index(f);
+    return i >= 0 ? le16(cal_blk[cal_map[i].blk] + (narrow ? 10 : 3)) : 0x34E2;
+}
+
 /* Transmit is allowed only inside these ranges (10 Hz units, [lo, hi)): the amateur allocations of
  * all three ITU regions that this chip can tune (all power levels), and marine VHF (capped at MID,
  * meant as about 5 W; not measured). Air band and everything else: no transmit. */
@@ -575,6 +720,15 @@ static const pwr_cal_t pwr_cal[] = {
 static uint16_t power_reg(uint32_t f, int power)
 {
     if (power == PWR_MIN) return 0;
+    int ci = cal_index(f);
+    if (ci >= 0) {
+        const uint8_t *b = cal_blk[cal_map[ci].blk];
+        uint32_t idx = (f - cal_map[ci].base) / 500000u;
+        if (idx > 15) idx = 15;
+        uint8_t hi = b[0x10 + idx], lo = b[0x20 + idx];
+        uint8_t v = power == PWR_HIGH ? hi : power == PWR_LOW ? lo : (uint8_t)((hi + lo) >> 1);
+        return (uint16_t)(((v & 0x3Fu) << 10) | 0x7Fu | (v ? 0x80u : 0));
+    }
     for (unsigned i = 0; i < sizeof pwr_cal / sizeof pwr_cal[0]; i++) {
         const pwr_cal_t *c = &pwr_cal[i];
         if (f < c->lo || f > c->hi) continue;
@@ -600,6 +754,11 @@ static int step_idx = 6;               /* 12.5 kHz */
 /* Backlight levels (stock 0x801FC44: 60, 65, 70, 76, 255). */
 static const uint8_t bl_list[] = { 60, 65, 70, 76, 255 };
 static int bl_idx = 4;
+/* Backlight timeout (menu "Light off"); the keypad light (PA9) follows the backlight. */
+static const uint8_t light_list[] = { 0, 10, 20, 30, 60 };          /* seconds, 0 = always on */
+static const char *const light_name[] = { "ALWAYS", "10 s", "20 s", "30 s", "60 s" };
+static int light_idx = 0, lit = 1, locked, scanning;
+static uint32_t last_activity, scan_next, scan_hold_until;
 
 /* 1750 Hz tone burst: tone 1 frequency word, Hz * 10.3 (the stock tone formula, Hz / 10 * 0x67). */
 #define TONE_1750    (175u * 0x67u)
@@ -665,7 +824,7 @@ static int radio_tune(uint32_t f)
     if (!b) return 0;
     freq10 = f;
     radio_rx_path(b);
-    uint32_t v = f + b->cal - 0x8000u;
+    uint32_t v = f + cal_word(f, b->cal) - 0x8000u;
     bk1_write(0x38, (uint16_t)(v & 0xFFFF));
     bk1_write(0x39, (uint16_t)(v >> 16));
     radio_rx_on();
@@ -697,12 +856,21 @@ static void radio_init(void)
     bk1_write(0x26, 0x13A0);
     /* Audio response coefficients (stock 0x80038D0), indexes from this radio's calibration
      * header SPI 0x0008-0x000B = 06 00 06 04: RX 300 Hz, RX 3 kHz, TX 3 kHz, TX 300 Hz. */
-    bk1_write(0x54, 0x8F88);
-    bk1_write(0x55, 0x3201);
-    bk1_write(0x75, 0xFA02);
-    bk1_write(0x74, 0xE61C);
-    bk1_write(0x44, 0x8F88);
-    bk1_write(0x45, 0x3201);
+    if (cal_ok) {   /* the radio's own indexes */
+        bk1_write(0x54, af300[cal_hdr[10]][0]);
+        bk1_write(0x55, af300[cal_hdr[10]][1]);
+        bk1_write(0x75, af3k[cal_hdr[11]]);
+        bk1_write(0x74, af3k[cal_hdr[9]]);
+        bk1_write(0x44, af300[cal_hdr[8]][0]);
+        bk1_write(0x45, af300[cal_hdr[8]][1]);
+    } else {
+        bk1_write(0x54, 0x8F88);
+        bk1_write(0x55, 0x3201);
+        bk1_write(0x75, 0xFA02);
+        bk1_write(0x74, 0xE61C);
+        bk1_write(0x44, 0x8F88);
+        bk1_write(0x45, 0x3201);
+    }
     bk1_write(0x71, 0x68DC);                                     /* scrambler off (0x8005218) */
     bk1_write(0x31, bk_read(0, 0x31) & ~0x000Au);                 /* scrambler and compander off */
     bk1_write(0x51, 0x0000);                                     /* no CTCSS/DCS */
@@ -910,16 +1078,16 @@ static int tx_start(int burst)
     if (b->tx_var == 3 || b->tx_var == 4) gpio_bits_reset(GPIOF, GPIO_PINS_0);
     else gpio_bits_set(GPIOF, GPIO_PINS_0);
     {   /* TX frequency (differs from receive when a repeater shift is set) */
-        uint32_t v = tf + b->cal - 0x8000u;
+        uint32_t v = tf + cal_word(tf, b->cal) - 0x8000u;
         bk1_write(0x38, (uint16_t)(v & 0xFFFF));
         bk1_write(0x39, (uint16_t)(v >> 16));
     }
     tx_tone();
     bk1_write(0x71, 0x68DC);                                     /* scrambler off */
     bk1_write(0x70, 0x0000);                                     /* no tone */
-    bk1_write(0x74, 0xE61C);                                     /* TX 3 kHz response */
+    bk1_write(0x74, cal_ok ? af3k[cal_hdr[9]] : 0xE61C);          /* TX 3 kHz response */
     bk1_write(0x7D, (uint16_t)(0xE940 + mic_gain));
-    bk1_write(0x40, TX_DEVIATION);
+    bk1_write(0x40, cal_dev(tf, mode == MODE_NFM));
     bk1_write(0x37, 0x1D0F);
     delay_ms(10);
     bk1_write(0x52, 0x028F);
@@ -1108,9 +1276,11 @@ static void top_bar(void)
 }
 
 /* Battery from PA7 with the stock formula ADC * 3 / 51 + 2 (0.1 V), gauge 6.8-8.4 V. */
+static int batt_v = 84;               /* 0.1 V */
 static void show_batt(void)
 {
     int v = (int)adc_read(ADC_CHANNEL_7) * 3 / 51 + 2;
+    batt_v = v;
     char s[8];
     s[0] = (char)('0' + v / 10 % 10); s[1] = '.'; s[2] = (char)('0' + v % 10); s[3] = 'V'; s[4] = 0;
     int ix = LCD_W - 40, iy = 11;
@@ -1385,6 +1555,28 @@ static void draw_home(void)
     meter_label_force = 1;
 }
 
+/* Simple AGC for USB and AM (stock does its own, 0x8024140): register 0x13 gain steps, PGA (bits
+ * 2:0) first, then LNA (bits 7:5). Steps down above -60 dBm, back up below -80 dBm, 300 ms apart. */
+static const uint16_t agc_steps[] = { 0x03BE, 0x03BD, 0x03BC, 0x03BB, 0x03BA, 0x03B9, 0x03B8,
+                                      0x0398, 0x0378, 0x0358, 0x0338 };
+#define NAGC ((int)(sizeof agc_steps / sizeof agc_steps[0]))
+static int agc_on = 1, agc_idx;
+static uint32_t agc_next;
+static void agc_run(int dbm)
+{
+    int want = agc_idx;
+    if (!agc_on || (mode != MODE_USB && mode != MODE_AM)) want = 0;
+    else if ((int32_t)(ticks - agc_next) >= 0) {
+        if (dbm > -60 && agc_idx < NAGC - 1) want = agc_idx + 1;
+        else if (dbm < -80 && agc_idx > 0) want = agc_idx - 1;
+    }
+    if (want != agc_idx) {
+        agc_idx = want;
+        bk1_write(0x13, agc_steps[agc_idx]);
+        agc_next = ticks + 300;
+    }
+}
+
 /* ---------------- VFO A / B ---------------- */
 /* Each VFO keeps its frequency, mode, step, repeater shift and offset, and tones; * swaps them. */
 typedef struct { uint32_t freq; uint8_t mode, step, ofs; int8_t shift; uint8_t tt, rt; uint16_t tv, rv; } vfo_t;
@@ -1405,6 +1597,48 @@ static void vfo_select(int n)
     audio_close();
     radio_tune(v->freq);
     radio_mode();
+}
+
+/* ---------------- backlight timeout, scan ---------------- */
+static void wake(void)
+{
+    last_activity = ticks;
+    if (!lit) {
+        lit = 1;
+        backlight(bl_list[bl_idx]);
+        gpio_bits_set(GPIOA, GPIO_PINS_9);
+    }
+}
+
+/* Scan the current receive band by the menu step; stop on a signal, carry on 3 s after it goes. */
+static void scan_start(void)
+{
+    if (rxband_of(freq10) < 0) { show_status("SCAN: NOT IN A BAND", C_YELLOW); return; }
+    scanning = 1;
+    scan_next = ticks;
+    scan_hold_until = ticks;
+    show_status("SCANNING", C_GREEN);
+}
+
+static void scan_stop(void)
+{
+    if (!scanning) return;
+    scanning = 0;
+    show_status("RX", C_GREEN);
+}
+
+static void scan_step(void)
+{
+    if (audio_on) { scan_hold_until = ticks + 3000; return; }
+    if ((int32_t)(ticks - scan_hold_until) < 0 || (int32_t)(ticks - scan_next) < 0) return;
+    int b = rxband_of(freq10);
+    if (b < 0) { scan_stop(); return; }
+    uint32_t f = freq10 + step_list[step_idx];
+    if (f > rxbands[b].hi) f = rxbands[b].lo;
+    radio_tune(f);
+    show_freq();
+    if (status_text[0] != 'S') show_status("SCANNING", C_GREEN);
+    scan_next = ticks + 150;
 }
 
 /* ---------------- menu ---------------- */
@@ -1445,10 +1679,12 @@ static void tone_from_index(int i, int *type, uint16_t *val)
     else { *type = TONE_DCS_I; *val = dcs_list[i - 156]; }
 }
 
-enum { MI_BAND, MI_POWER, MI_TXTONE, MI_RXTONE, MI_SHIFT, MI_OFFSET, MI_SQ, MI_STEP, MI_MODE, MI_MIC, MI_TOT, MI_BL, MI_COUNT };
+enum { MI_BAND, MI_POWER, MI_TXTONE, MI_RXTONE, MI_SHIFT, MI_OFFSET, MI_SQ, MI_STEP, MI_MODE, MI_MIC, MI_TOT, MI_BL,
+       MI_LIGHT, MI_SCAN, MI_COUNT };
 static const char *const menu_name[MI_COUNT] = {
-    "Band", "Power", "TX tone", "RX tone", "Shift", "Offset", "Squelch", "Step", "Mode", "Mic gain", "Time-out", "Backlight" };
-static const char menu_key_of[MI_COUNT] = { '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '*', '#' };
+    "Band", "Power", "TX tone", "RX tone", "Shift", "Offset", "Squelch", "Step", "Mode", "Mic gain", "Time-out", "Backlight",
+    "Light off", "Scan" };
+static const char menu_key_of[MI_COUNT] = { '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '*', '#', ' ', ' ' };
 static int menu_sel, menu_edit;
 
 static void put2(char *s, int v) { if (v >= 10) *s++ = (char)('0' + v / 10); *s++ = (char)('0' + v % 10); *s = 0; }
@@ -1477,6 +1713,8 @@ static void menu_value(int item, char *s)
                    while (n) s[p++] = d[--n];
                    s[p++] = ' '; s[p++] = 's'; s[p] = 0; return; }
     case MI_BL: put2(s, bl_idx + 1); return;
+    case MI_LIGHT: src = light_name[light_idx]; break;
+    case MI_SCAN: src = "Start"; break;
     }
     while ((*s++ = *src++)) { }
 }
@@ -1514,6 +1752,8 @@ static void menu_change(int item, int dir)
     case MI_MODE: mode = (mode + dir + NMODES) % NMODES; audio_close(); radio_mode(); break;
     case MI_TOT: tot_idx = clampi(tot_idx + dir, 0, (int)(sizeof tot_list / sizeof tot_list[0]) - 1); break;
     case MI_BL: bl_idx = clampi(bl_idx + dir, 0, 4); backlight(bl_list[bl_idx]); break;
+    case MI_LIGHT: light_idx = clampi(light_idx + dir, 0, (int)sizeof light_list - 1); break;
+    case MI_SCAN: break;
     }
 }
 
@@ -1529,11 +1769,11 @@ static void menu_jump(int item)
 }
 
 /* Value before an edit, restored by the red bar. */
-static struct { int power, mic, tt, rt, sq, step, mode, tot, bl, shift, ofs; uint16_t tv, rv; uint32_t freq; } menu_old;
+static struct { int power, mic, tt, rt, sq, step, mode, tot, bl, shift, ofs, light; uint16_t tv, rv; uint32_t freq; } menu_old;
 static void menu_snapshot(void)
 {
     menu_old.freq = freq10;
-    menu_old.shift = shift; menu_old.ofs = ofs_idx;
+    menu_old.shift = shift; menu_old.ofs = ofs_idx; menu_old.light = light_idx;
     menu_old.power = power; menu_old.mic = mic_gain; menu_old.tt = tone_type; menu_old.tv = tone_val;
     menu_old.rt = rx_tone_type; menu_old.rv = rx_tone_val; menu_old.sq = sq_level; menu_old.step = step_idx;
     menu_old.mode = mode; menu_old.tot = tot_idx; menu_old.bl = bl_idx;
@@ -1541,7 +1781,7 @@ static void menu_snapshot(void)
 static void menu_restore(void)
 {
     if (freq10 != menu_old.freq) radio_tune(menu_old.freq);
-    shift = menu_old.shift; ofs_idx = menu_old.ofs;
+    shift = menu_old.shift; ofs_idx = menu_old.ofs; light_idx = menu_old.light;
     power = menu_old.power; mic_gain = menu_old.mic; tone_type = menu_old.tt; tone_val = menu_old.tv;
     rx_tone_type = menu_old.rt; rx_tone_val = menu_old.rv; sq_level = menu_old.sq; step_idx = menu_old.step;
     tot_idx = menu_old.tot;
@@ -1575,7 +1815,7 @@ static void menu_row(int item)
         lcd_fill(0, y, LCD_W, MENU_ROW_H, C_BLACK);
     }
     int ty = y + (MENU_ROW_H - F_MED->height) / 2;
-    char nm[16] = { menu_key_of[item], '.', ' ' };
+    char nm[16] = { menu_key_of[item], menu_key_of[item] == ' ' ? ' ' : '.', ' ' };
     for (int k = 0; menu_name[item][k]; k++) { nm[3 + k] = menu_name[item][k]; nm[4 + k] = 0; }
     aa_text(16, ty, F_MED, nm, fg, bg);
     char v[16];
@@ -1625,6 +1865,7 @@ static void menu_key(char k)
     if (!menu_edit) {
         if (k == K_UP) menu_select((menu_sel + MI_COUNT - 1) % MI_COUNT);
         else if (k == K_DOWN) menu_select((menu_sel + 1) % MI_COUNT);
+        else if (k == K_MENU && menu_sel == MI_SCAN) { menu_close(); scan_start(); }
         else if (k == K_MENU) { menu_snapshot(); menu_edit = 1; menu_row(menu_sel); }
         else if (k == K_EXIT) menu_close();
         else for (int i = 0; i < MI_COUNT; i++) if (menu_key_of[i] == k) { menu_snapshot(); menu_edit = 1; menu_select(i); break; }
@@ -1851,6 +2092,40 @@ static void command(char *cmd)
         }
         uart_puts(vfo_cur ? "VFO B\r\n" : "VFO A\r\n");
         report_freq();
+    } else if (!__builtin_strcmp(cmd, "SPIID")) {
+        uart_puts("SPIID "); put_hex(flash_id(), 6); uart_puts("\r\n");
+    } else if (!__builtin_strncmp(cmd, "SPIRD ", 6)) {
+        uint32_t a, n = 16;
+        char *q = cmd + 6;
+        if (!hex_val(q, &a)) { uart_puts("ERR SPIRD addr [len] (hex)\r\n"); return; }
+        while (*q && *q != ' ') q++;
+        if (*q == ' ' && !hex_val(q + 1, &n)) { uart_puts("ERR SPIRD addr [len] (hex)\r\n"); return; }
+        if (n > 64) n = 64;
+        uint8_t b[64];
+        flash_read(a, b, (int)n);
+        uart_puts("SPIRD "); put_hex(a, 6); uart_puts(":");
+        for (uint32_t i = 0; i < n; i++) { uart_puts(" "); put_hex(b[i], 2); }
+        uart_puts("\r\n");
+    } else if (!__builtin_strcmp(cmd, "CAL")) {
+        uart_puts(cal_ok ? "CAL FROM SPI FLASH, ID " : "CAL BUILT-IN, ID "); put_hex(flash_jedec, 6);
+        uart_puts(", HEADER");
+        for (int i = 0; i < 12; i++) { uart_puts(" "); put_hex(cal_hdr[i], 2); }
+        uart_puts("\r\n");
+    } else if (!__builtin_strncmp(cmd, "AGC", 3) && (cmd[3] == ' ' || cmd[3] == 0)) {
+        if (!__builtin_strcmp(cmd, "AGC ON")) agc_on = 1;
+        else if (!__builtin_strcmp(cmd, "AGC OFF")) agc_on = 0;
+        else if (cmd[3]) { uart_puts("ERR AGC ON or OFF\r\n"); return; }
+        uart_puts(agc_on ? "AGC ON, STEP " : "AGC OFF, STEP "); put_dec(agc_idx); uart_puts("\r\n");
+    } else if (cmd[0] == 'W' && cmd[1] == '1' && cmd[2] == ' ') {
+        /* Experiments only. Transmit-related registers are refused. */
+        uint32_t reg, val;
+        char *q = cmd + 3;
+        if (!hex_val(q, &reg) || reg > 0x7F) { uart_puts("ERR W1 reg value (hex)\r\n"); return; }
+        while (*q && *q != ' ') q++;
+        if (*q != ' ' || !hex_val(q + 1, &val) || val > 0xFFFF) { uart_puts("ERR W1 reg value (hex)\r\n"); return; }
+        if (reg == 0x30 || reg == 0x33 || reg == 0x36 || reg == 0x37 || reg == 0x52) { uart_puts("ERR register not allowed\r\n"); return; }
+        bk1_write((uint8_t)reg, (uint16_t)val);
+        uart_puts("W1 "); put_hex(reg, 2); uart_puts(" = "); put_hex(val, 4); uart_puts("\r\n");
     } else if (cmd[0] == 'M' && cmd[1] == 'I' && cmd[2] == 'C' && (cmd[3] == ' ' || cmd[3] == 0)) {
         int v;
         if (cmd[3] == ' ') {
@@ -1903,6 +2178,7 @@ int main(void)
     tx_kill();
     clock_config();
     SysTick_Config(system_core_clock / 1000);
+    pvm_init();
     gpio_bits_set(GPIOF, GPIO_PINS_0);
     pin_out(GPIOF, GPIO_PINS_0);
 
@@ -1931,9 +2207,12 @@ int main(void)
     lcd_init();
     lcd_fill(0, 0, LCD_W, LCD_H, C_BLACK);
     backlight(bl_list[bl_idx]);
+    gpio_bits_set(GPIOA, GPIO_PINS_9);              /* keypad light */
     splash();
     top_bar();
 
+    flash_init();
+    cal_load();
     radio_init();
     show_freq();
     show_status("RX", C_GREEN);
@@ -1950,7 +2229,8 @@ int main(void)
     int elen = 0;
     uint16_t last_m = 0;
     int last_key = 0, tx_lockout = 0, alarm_count = 0;
-    uint32_t rep_at = 0;
+    uint32_t rep_at = 0, green_since = 0;
+    int green_used = 1;
     uint32_t tx_until = 0;
     uint32_t next_scan = 0, next_rssi = 0, next_sq = 0, next_batt = 10000;
     int last_rssi = -160, last_noise = 127, open_count = 0, close_count = 0, last_side = SIDE_NONE;
@@ -1991,6 +2271,8 @@ int main(void)
                 show_tx();
                 uart_puts(alarm ? "TX 1750\r\n" : "TX VOICE\r\n");
             } else if (key && !last_key && !tx_on && !tx_lockout) {
+                wake();
+                scan_stop();
                 if (menu_open) menu_close();
                 if (tx_start(alarm)) {
                     tx_until = ticks + (uint32_t)tot_list[tot_idx] * 1000u;
@@ -2005,13 +2287,33 @@ int main(void)
             last_key = key;
 
             uint16_t m = keys_matrix();
+            uint16_t prev_m = last_m;
             uint16_t pressed = m & (uint16_t)~last_m;
+            if (pressed) {
+                int was_dark = !lit;
+                wake();
+                if (scanning) { scan_stop(); pressed = 0; }
+                if (was_dark) pressed = 0;                     /* the first press only wakes the screen */
+            }
             const uint16_t rep_keys = (1u << 1) | (1u << 2);   /* up, down repeat when held */
             if (m & rep_keys) {
                 if (!(last_m & m & rep_keys)) rep_at = ticks + 450;
                 else if ((int32_t)(ticks - rep_at) >= 0) { pressed |= m & rep_keys; rep_at = ticks + 90; }
             }
             last_m = m;
+            if (!menu_open) {
+                /* Green bar on the home screen: held 1.5 s = key lock on/off, short = menu on release. */
+                const uint16_t green = 1u << 0;
+                if ((m & green) && !(prev_m & green)) { green_since = ticks; green_used = 0; }
+                if ((m & green) && !green_used && (int32_t)(ticks - green_since) >= 1500) {
+                    green_used = 1;
+                    locked = !locked;
+                    show_status(locked ? "KEYS LOCKED" : "KEYS UNLOCKED", C_YELLOW);
+                }
+                if (!(m & green) && (prev_m & green) && !green_used && !locked && lit) menu_show();
+                pressed &= (uint16_t)~green;
+                if (locked && pressed) { show_status("KEYS LOCKED", C_YELLOW); pressed = 0; }
+            }
             for (int b = 0; b < 16 && !tx_on; b++) {
                 if (!(pressed & (1u << b))) continue;
                 char k = key_char[b];
@@ -2043,8 +2345,6 @@ int main(void)
                 } else if (k == K_UP || k == K_DOWN) {
                     uint32_t f = k == K_UP ? freq10 + step_list[step_idx] : freq10 - step_list[step_idx];
                     changed = radio_tune(f);
-                } else if (k == K_MENU) {
-                    menu_show();
                 }
                 if (changed) {
                     show_freq();
@@ -2059,6 +2359,7 @@ int main(void)
             next_sq = ticks + 50;
             last_rssi = rssi_dbm();
             last_noise = bk_read(0, 0x65) & 0x7F;
+            agc_run(last_rssi);
             int side = side_key();
             if (side != last_side) {
                 if (last_side != SIDE_NONE) { uart_puts(side_name[last_side]); uart_puts(" up\r\n"); }
@@ -2085,6 +2386,7 @@ int main(void)
                 if (++open_count >= 2) {
                     open_count = 0;
                     audio_open();
+                    wake();
                     show_status(monitor ? "RX MONITOR" : "RX OPEN", C_GREEN);
                 }
             } else if (!want && audio_on) {
@@ -2111,9 +2413,19 @@ int main(void)
             show_rssi(last_rssi, last_noise);
         }
 
+        if (scanning && !tx_on && !menu_open) scan_step();
+
+        if (lit && light_list[light_idx] && !tx_on && !audio_on && !menu_open &&
+            (int32_t)(ticks - last_activity) >= (int32_t)light_list[light_idx] * 1000) {
+            lit = 0;
+            backlight(0);
+            gpio_bits_reset(GPIOA, GPIO_PINS_9);
+        }
+
         if (!tx_on && (int32_t)(ticks - next_batt) >= 0) {
             next_batt = ticks + 10000;
             show_batt();
+            if (batt_v <= 68 && !audio_on) show_status("LOW BATTERY", C_YELLOW);
         }
 
     }

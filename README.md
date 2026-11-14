@@ -154,6 +154,16 @@ The items are:
 
 and open http://localhost:8766. Details, including WSL networking and loading your own keps: [tracker/README.md](tracker/README.md).
 
+## Rig control (Hamlib)
+
+`tools/rigctld.py` makes the radio look like a Hamlib network rig, so programs such as gpredict, WSJT-X, fldigi and CQRLOG can tune and key it over the programming cable:
+
+```sh
+.venv/bin/python tools/rigctld.py            # listens on localhost port 4532
+```
+
+In the program, choose Hamlib model 2 ("NET rigctl") at `localhost:4532`. It supports frequency, mode (USB, AM, FM, narrow FM), VFO A/B, PTT and signal strength. While keyed it repeats the firmware's keep-alive, and it unkeys if the program disconnects. The firmware's band limits, power and time-out timer still apply. Run either the tracker or the bridge at a time; both use the same cable.
+
 ## Building from source
 
 ```sh
@@ -187,6 +197,7 @@ If the radio is switched off while transmitting, the radio chip keeps its transm
 | `tools/flash.py` | Bootloader flasher (`probe` / `flash`, `--model uv98`; `--model rt880` for Radtel RT-880, untested) |
 | `tools/backup_spi.py` | 4 MB SPI flash backup (stock firmware) |
 | `tools/extract_upgrade_tool.py` | Extracts the official firmware from iRadio's upgrade tool |
+| `tools/rigctld.py` | Hamlib network (rigctld) bridge |
 | `tracker/` | Satellite tracker |
 | [FINDINGS.md](FINDINGS.md) | Everything worked out about the hardware and protocols, with every test result |
 | [TODO.md](TODO.md) | What is planned |

@@ -120,6 +120,21 @@ class UV98:
         s = self.get_status()
         return self.tune(s["freq_hz"] + int(delta_hz), s["mode"])
 
+    def ptt(self, on):
+        """Key or unkey the transmitter. The firmware drops PTT unless PTT ON is repeated within 2 s."""
+        reply = self._cmd("PTT ON" if on else "PTT OFF")
+        if not any(l.startswith("PTT") for l in reply):
+            raise RadioError("; ".join(reply) or "no reply to PTT")
+        return on
+
+    def vfo(self, name=None):
+        """Return the current VFO ("A" or "B"), selecting it first if name is given."""
+        reply = self._cmd(f"VFO {name}" if name else "VFO")
+        for l in reply:
+            if l.startswith("VFO "):
+                return l.split()[1]
+        raise RadioError("; ".join(reply) or "no reply to VFO")
+
     def set_volume(self, level):
         level = max(0, min(63, int(level)))
         reply = self._cmd(f"VOL {level}")
