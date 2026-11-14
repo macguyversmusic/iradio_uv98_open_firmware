@@ -1,5 +1,7 @@
 # iRadio UV-98 Plus open firmware
 
+I got sick of people selling simple knowledge or "personalised" firmware.  open it up and share dont be greedy.
+
 Open firmware for the iRadio UV-98 Plus handheld (Radtel RT-880G family, FCC ID 2AZSA-6D880), written from scratch. This repository also holds the tools and notes needed to repeat the work from zero.
 
 **Status: experimental test firmware (test 8). It is not yet a usable everyday radio.** It has been run on one UV-98 Plus only. That radio's calibration values (frequency correction words, transmit deviation) are built into `firmware/src/main.c`. On another radio the frequency may be slightly off until the firmware reads each radio's own calibration from its SPI flash; [FINDINGS.md](FINDINGS.md) lists where those values are.
