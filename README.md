@@ -4,13 +4,13 @@ I got sick of people selling simple knowledge or "personalised" firmware.  open 
 
 Open firmware for the iRadio UV-98 Plus handheld (Radtel RT-880G family, FCC ID 2AZSA-6D880), written from scratch, plus the tools to flash it and control the radio from a computer over the programming cable, and a satellite tracker that tunes the radio to downlinks.
 
-**Status: experimental (test 18), run on one UV-98 Plus only.** The firmware reads the radio's own calibration (frequency correction, deviation, power levels) from its SPI flash, with our radio's values built into `firmware/src/main.c` as a fallback. [FEATURE_LIST.md](FEATURE_LIST.md) lists every feature, how to use it, and which have not been tested on the radio yet.
+**Status: experimental (test 19), run on one UV-98 Plus only.** The firmware reads the radio's own calibration (frequency correction, deviation, power levels) from its SPI flash, with our radio's values built into `firmware/src/main.c` as a fallback. [FEATURE_LIST.md](FEATURE_LIST.md) lists every feature, how to use it, and which have not been tested on the radio yet.
 
 ## Features
 
 - **Receive:** 18-660 MHz and 840-1300 MHz in FM, NFM, AM and USB. Noise squelch, CTCSS and DCS tone squelch, signal meter, AGC for USB and AM. Dual watch on the radio's second receiver chip, band scan, spectrum view and frequency detect.
 - **Transmit:** amateur bands only (all three ITU regions), plus marine VHF capped at MID power. Power LOW, MID and HIGH from the radio's own calibration. CTCSS and DCS, a 1750 Hz burst on the alarm button, repeater shift and offset with reverse, and a time-out timer.
-- **On the radio:** boot splash, high-contrast screen with smooth fonts, VFO A and B (the other VFO on a small line above the meter), a menu in groups with number shortcuts, key lock, backlight timeout and a low-battery warning. Band presets: 10 m, 6 m, air (receive only), 2 m, marine, 220 MHz, 70 cm, 23 cm. The LED is green when receiving, yellow when a signal is held back by the tone squelch, and red when transmitting.
+- **On the radio:** boot splash, high-contrast screen with smooth fonts, VFO A and B (the other VFO on a small line under the main frequency), a menu in groups with number shortcuts, key lock, backlight timeout and a low-battery warning. Band presets: 10 m, 6 m, air (receive only), 2 m, marine, 220 MHz, 70 cm, 23 cm. The LED is green when receiving, yellow when a signal is held back by the tone squelch, and red when transmitting.
 - **From a computer:** serial commands over the programming cable, including transmit (PTT with a keep-alive), and the satellite tracker in [tracker/](tracker/README.md).
 - **Saved settings:** both VFOs, power, mic gain, squelch, time-out, backlight, light timeout, band memories, channel mode and screen style are kept in a spare SPI flash sector (0xFC000), saved 3 seconds after a change.
 - **Channels:** channel mode uses the channels already in the radio (frequency, split, mode, tones, power, name). The firmware answers the stock programming protocol, so CHIRP (model Radtel RT-880G) can read and write them. Not yet tested with CHIRP.
@@ -88,7 +88,7 @@ Switch the radio on normally, then off **without pressing PTT** (see the known p
 
 ```sh
 .venv/bin/python tools/flash.py probe --model uv98                 # optional: connect only, erases nothing
-.venv/bin/python tools/flash.py flash --model uv98 --image bin/uv98plus_openfw_test18.bin --yes
+.venv/bin/python tools/flash.py flash --model uv98 --image bin/uv98plus_openfw_test19.bin --yes
 ```
 
 It takes about 30 seconds: 246 blocks of 1 KB, each acknowledged. When it prints `final reply 6`, switch the radio off and on normally. To go back to stock, flash `uv98plus_V1.16_250915.bin` the same way.
@@ -101,7 +101,7 @@ The flasher checks the image before sending it and writes only the application a
 |---|---|
 | 0-9, then # | Type a frequency in kHz and tune to it (red bar clears the entry). In channel mode: go to that channel number |
 | # (nothing typed) | Reverse: listen on the repeater input (or on a split channel's transmit frequency); press again to swap back |
-| * | Swap VFO A and VFO B (each keeps its frequency, mode, step, shift, offset and tones). The main VFO is at the top; the other is on the small line above the meter, receive only |
+| * | Swap VFO A and VFO B (each keeps its frequency, mode, step, shift, offset and tones). The main VFO is at the top; the other is on the small line under the main frequency, receive only |
 | Up / down | Tune by the step set in the menu (12.5 kHz by default); held, it repeats. In channel mode: next / previous used channel |
 | Red bar (nothing typed) | Switch between VFO mode and channel mode |
 | Green bar | Open the menu |

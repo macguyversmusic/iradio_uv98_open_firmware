@@ -1,6 +1,6 @@
 # Feature list
 
-What the open firmware (test 18) does, and how to use each feature. Unless a feature says otherwise, it has been tested on the radio.
+What the open firmware (test 19) does, and how to use each feature. Unless a feature says otherwise, it has been tested on the radio.
 
 ## Receiving
 
@@ -38,7 +38,7 @@ What the open firmware (test 18) does, and how to use each feature. Unless a fea
 
 - **Dual watch**
 
-  The radio's second receiver chip listens on the other VFO, shown on the small line above the meter. When it hears a signal while the main receiver is quiet, the main receiver listens there too so you hear it, and the line turns green; the top of the screen and transmit stay on the main VFO or channel. It comes back 2 seconds after the signal ends, or at once on any key or PTT. On at start-up, also in channel mode. Menu Settings, Dual watch, or `DW ON` / `DW OFF`. Not yet tested with a signal on the other VFO.
+  The radio's second receiver chip listens on the other VFO, shown on the small line under the main frequency. When it hears a signal while the main receiver is quiet, the main receiver listens there too so you hear it, and the line turns green; the top of the screen and transmit stay on the main VFO or channel. It comes back 2 seconds after the signal ends, or at once on any key or PTT. On at start-up, also in channel mode. Menu Settings, Dual watch, or `DW ON` / `DW OFF`. Not yet tested with a signal on the other VFO.
 
 - **Band scan**
 
@@ -46,7 +46,7 @@ What the open firmware (test 18) does, and how to use each feature. Unless a fea
 
 - **Spectrum view**
 
-  Shows the signal strength at 44 points around the current frequency, spaced by the menu step, as bars rising from the noise floor. Menu Scan, Spectrum. Any key stops it. Over the cable, `SPEC` prints one sweep as 44 dBm values. Fixed in test 18 (test 16 and 17 read each point too soon); not yet seen on the radio.
+  Shows the signal strength at 44 points around the current frequency, spaced by the menu step, as bars rising from the noise floor. Menu Scan, Spectrum. Any key stops it. Over the cable, `SPEC` prints one sweep as 44 dBm values. Fixed in test 18 (tests 16 and 17 read each point too soon); not yet seen on the radio.
 
 - **Frequency detect**
 
@@ -98,7 +98,7 @@ What the open firmware (test 18) does, and how to use each feature. Unless a fea
 
 - **VFO A and VFO B**
 
-  Two independent VFOs, each with its own frequency, mode, step, shift, offset and tones. The main one is at the top; the other is on a small line above the meter, receive only. `*` swaps them.
+  Two independent VFOs, each with its own frequency, mode, step, shift, offset and tones. The main one is at the top; the other is on a small line under the main frequency, receive only. `*` swaps them.
 
 - **Menu in groups**
 
