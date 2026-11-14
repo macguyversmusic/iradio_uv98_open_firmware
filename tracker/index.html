@@ -84,8 +84,6 @@ footer ul { padding-left: 1.2em; }
       <button type="button" data-step="1000">Tune up 1 kHz</button>
       <button type="button" data-step="-100">Tune down 100 Hz</button>
       <button type="button" data-step="100">Tune up 100 Hz</button>
-      <button type="button" data-vol="-4">Volume down</button>
-      <button type="button" data-vol="4">Volume up</button>
       <button type="button" id="connect" hidden>Connect radio</button>
       <button type="button" id="unfollow" hidden>Stop following</button>
     </div>
@@ -160,7 +158,7 @@ async function api(path, body) {
 }
 
 function statusText(s) {
-  return `${mhz(s.freq_hz, 5)} MHz · ${s.mode} · signal ${s.rssi_dbm} dBm · volume ${s.volume}`;
+  return `${mhz(s.freq_hz, 5)} MHz · ${s.mode}`;
 }
 
 async function pollRadio() {
@@ -198,13 +196,11 @@ function tuned(r, label) {
   const s = r.status;
   let msg = `Tuned${label ? ' to ' + label : ''}: ${mhz(s.freq_hz, 5)} MHz ${s.mode}.`;
   if (r.doppler_hz) msg += ` Doppler correction ${r.doppler_hz > 0 ? '+' : ''}${r.doppler_hz} Hz.`;
-  return msg + ` Signal ${s.rssi_dbm} dBm.`;
+  return msg;
 }
 
 document.querySelectorAll('[data-step]').forEach(b => b.addEventListener('click', () =>
   run(b, '/api/radio', { step_hz: +b.dataset.step }, r => `${b.textContent}: ${statusText(r.status)}`)));
-document.querySelectorAll('[data-vol]').forEach(b => b.addEventListener('click', () =>
-  run(b, '/api/radio', { volume_delta: +b.dataset.vol }, r => `${b.textContent}: ${statusText(r.status)}`)));
 $('#connect').addEventListener('click', e => run(e.target, '/api/connect', {}, r => 'Radio connected.'));
 function setAuto() {
   run($('#auto'), '/api/auto', { on: $('#auto').checked, dwell: +$('#dwell').value },
