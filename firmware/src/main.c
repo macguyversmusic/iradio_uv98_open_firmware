@@ -6,7 +6,7 @@
 #include <stddef.h>
 #include "fonts_aa.h"
 
-#define FW_NAME  "UV98+ open test 27"
+#define FW_NAME  "UV98+ open test 28"
 #define APP_BASE 0x08002800u
 
 static void report_freq(void);
@@ -1772,6 +1772,8 @@ static void scan_peak(void)
     show_freq();
 }
 
+static void scan_peak_chan(void);
+
 static void scan_step(void)
 {
     if ((int32_t)(ticks - scan_poll_next) >= 0) {
@@ -1779,8 +1781,8 @@ static void scan_step(void)
         if (!sq_carrier()) scan_hits = 0;
         else if (scan_hits < 7 && ++scan_hits == 7) scan_found = 1;
     }
-    if (scanning == 1 && scan_found && !scan_peaked && !audio_on) {
-        scan_peak();                   /* then the squelch must confirm again on the peak */
+    if (scan_found && !scan_peaked && !audio_on) {
+        if (scanning == 1) scan_peak(); else scan_peak_chan();   /* then the squelch must confirm again */
         scan_peaked = 1;
         scan_hits = scan_found = 0;
         scan_next = ticks + 200;
@@ -2027,6 +2029,28 @@ static int chan_next_scan(int n, int dir)
         if (chan_read(m, c) && !(c[19] & 0x80)) return m;
     }
     return -1;
+}
+
+/* Channel scan found a signal on chan_num: the same check among the used channels (not marked scan
+ * remove) within 100 kHz of it, at most 16; settle on the one with the strongest RSSI. */
+static void scan_peak_chan(void)
+{
+    uint8_t c[CH_SIZE];
+    uint32_t f0 = freq10;
+    int best = chan_num, best_r = -1000, count = 0;
+    audio_close();
+    for (int n = 0; n < CH_COUNT && count < 16; n++) {
+        if (!(n & 63)) wdt_counter_reload();
+        if (!chan_read(n, c) || (c[19] & 0x80)) continue;
+        uint32_t rx = (uint32_t)c[6] | (uint32_t)c[7] << 8 | (uint32_t)c[8] << 16 | (uint32_t)c[9] << 24;
+        if (!band_of(rx) || (rx > f0 ? rx - f0 : f0 - rx) > 10000u) continue;
+        wdt_counter_reload();
+        int r = rssi_at(rx);
+        count++;
+        if (r > best_r) { best_r = r; best = n; }
+    }
+    chan_apply(best);
+    show_freq();
 }
 
 /* Next used channel from n in direction dir (wraps); -1 if none. */

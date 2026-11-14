@@ -4,11 +4,11 @@ I got sick of people selling simple knowledge or "personalised" firmware.  open 
 
 Open firmware for the iRadio UV-98 Plus handheld (Radtel RT-880G family, FCC ID 2AZSA-6D880), written from scratch, plus the tools to flash it and control the radio from a computer over the programming cable, and a satellite tracker that tunes the radio to downlinks.
 
-**Status: experimental (test 27), run on one UV-98 Plus only.** The firmware reads the radio's own calibration (frequency correction, deviation, power levels) from its SPI flash, with our radio's values built into `firmware/src/main.c` as a fallback.
+**Status: experimental (test 28), run on one UV-98 Plus only.** The firmware reads the radio's own calibration (frequency correction, deviation, power levels) from its SPI flash, with our radio's values built into `firmware/src/main.c` as a fallback.
 
 ## Features
 
-Each feature says whether it has been tested on the radio, and with which test build. "Not tested yet" means no test on the radio has been recorded. Test 27 is on our radio now.
+Each feature says whether it has been tested on the radio, and with which test build. "Not tested yet" means no test on the radio has been recorded. Test 28 is on our radio now.
 
 ### Receiving
 
@@ -30,8 +30,8 @@ Each feature says whether it has been tested on the radio, and with which test b
   *Partly tested: it starts and watches the other VFO (test 18, over the cable). Not tested yet with a signal on the other VFO.*
 - **Band scan:** in VFO mode, steps through the current band preset by the menu step, 200 ms per step as stock. A signal counts after 7 open squelch readings in a row; the scan then checks the steps up to 100 kHz either side and settles on the strongest, so a strong transmitter close by doesn't stop it on a neighbouring step. It carries on 2 seconds after the signal goes. Up and down during a scan set its direction; any other key or PTT stops it. Menu Scan, Scan, or `SCAN ON` (up) / `SCAN DOWN`.
   *Tested: starts and stops (test 21); stopped on 145.500 for a UV-5R at 1 W, scanning up from 145.400 and 145.450 (tests 26-27) and down from 145.550 (test 27).*
-- **Channel scan:** in channel mode, Scan steps through the used channels instead, skipping channels marked "scan remove" in CHIRP, each with its own receive tone. It stops on a signal (7 open squelch readings in a row) and carries on 2 seconds after the signal goes. Up and down during a scan set its direction; any other key or PTT stops it. Menu Scan, Scan, or `SCAN ON` / `SCAN DOWN`.
-  *Partly tested: starts, steps and stops over the cable (test 21). Not tested yet: stopping on a signal.*
+- **Channel scan:** in channel mode, Scan steps through the used channels instead, skipping channels marked "scan remove" in CHIRP, each with its own receive tone. It stops on a signal (7 open squelch readings in a row), then checks your channels within 100 kHz of that one and settles on the strongest, so a strong transmitter close by doesn't stop it on a neighbouring channel. It carries on 2 seconds after the signal goes. Up and down during a scan set its direction; any other key or PTT stops it. Menu Scan, Scan, or `SCAN ON` / `SCAN DOWN`.
+  *Tested: starts, steps and stops over the cable (test 21); stopped on ch 17 (145.500) for a UV-5R at 1 W (test 28; test 27 without the check stopped on ch 16, 145.420).*
 - **Frequency detect:** finds the frequency of a nearby transmitter. Start it, then key the other radio close by. The radio tunes to what it finds, to the nearest 1 kHz, or shows NOTHING FOUND after 20 seconds. Menu Scan, Freq detect, or `FDET`. Any key stops it.
   *Known problem: it reports a frequency within a second of starting, with nothing transmitting (143.605 and 256.274 MHz in tests 21-23).*
 
@@ -180,7 +180,7 @@ Switch the radio on normally, then off **without pressing PTT** (see [Known prob
 
 ```sh
 .venv/bin/python tools/flash.py probe --model uv98                 # optional: connect only, erases nothing
-.venv/bin/python tools/flash.py flash --model uv98 --image bin/uv98plus_openfw_test27.bin --yes
+.venv/bin/python tools/flash.py flash --model uv98 --image bin/uv98plus_openfw_test28.bin --yes
 ```
 
 It takes about 30 seconds: 246 blocks of 1 KB, each acknowledged. When it prints `final reply 6`, switch the radio off and on normally. To go back to stock, flash `uv98plus_V1.16_250915.bin` the same way.
