@@ -6,13 +6,14 @@
 #include <stddef.h>
 #include "fonts_aa.h"
 
-#define FW_NAME  "UV98+ open test 19"
+#define FW_NAME  "UV98+ open test 20"
 #define APP_BASE 0x08002800u
 
 static void report_freq(void);
 static void show_vfo2(void);
 static void chan_leave(void);
 static int chan_apply(int n);
+static int chan_next_scan(int n);
 
 /* ---------------- timing ---------------- */
 static volatile uint32_t ticks;
@@ -1652,10 +1653,19 @@ static void wake(void)
     }
 }
 
-/* Scan the current receive band by the menu step; stop on a signal, carry on 3 s after it goes. */
+/* VFO mode: scan the current receive band by the menu step. Channel mode: scan the used channels,
+ * skipping those marked "scan remove" (CHIRP), each with its own receive tone. Stop on a signal, carry
+ * on 3 s after it goes. scanning: 1 = band, 2 = channels. */
 static void scan_start(void)
 {
-    if (chan_mode) { chan_leave(); show_freq(); }
+    if (chan_mode) {
+        if (chan_next_scan(chan_num) < 0) { show_status("NO CHANNELS TO SCAN", C_YELLOW); return; }
+        scanning = 2;
+        scan_next = ticks;
+        scan_hold_until = ticks;
+        show_status("SCANNING CHANNELS", C_GREEN);
+        return;
+    }
     if (rxband_of(freq10) < 0) { show_status("SCAN: NOT IN A BAND", C_YELLOW); return; }
     scanning = 1;
     scan_next = ticks;
@@ -1678,6 +1688,14 @@ static void scan_step(void)
         return;
     }
     if ((int32_t)(ticks - scan_hold_until) < 0 || (int32_t)(ticks - scan_next) < 0) return;
+    if (scanning == 2) {
+        int n = chan_mode ? chan_next_scan(chan_num) : -1;
+        if (n < 0 || !chan_apply(n)) { scan_stop(); return; }
+        show_freq();
+        if (status_text[0] != 'S') show_status("SCANNING CHANNELS", C_GREEN);
+        scan_next = ticks + (rx_tone_type != TONE_OFF ? 400 : 200);   /* time for the tone decoder */
+        return;
+    }
     int b = rxband_of(freq10);
     if (b < 0) { scan_stop(); return; }
     uint32_t f = freq10 + step_list[step_idx];
@@ -1889,6 +1907,17 @@ static int chan_apply(int n)
     radio_tune(rx);
     radio_mode();
     return 1;
+}
+
+/* Next used channel after n (wraps) that is not marked "scan remove" (+19 bit 7, CHIRP); -1 if none. */
+static int chan_next_scan(int n)
+{
+    uint8_t c[CH_SIZE];
+    for (int i = 1; i <= CH_COUNT; i++) {
+        int m = (n + i) % CH_COUNT;
+        if (chan_read(m, c) && !(c[19] & 0x80)) return m;
+    }
+    return -1;
 }
 
 /* Next used channel from n in direction dir (wraps); -1 if none. */
