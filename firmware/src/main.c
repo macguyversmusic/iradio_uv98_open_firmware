@@ -6,7 +6,7 @@
 #include <stddef.h>
 #include "fonts_aa.h"
 
-#define FW_NAME  "UV98+ open test 18"
+#define FW_NAME  "UV98+ open test 19"
 #define APP_BASE 0x08002800u
 
 static void report_freq(void);
@@ -1229,12 +1229,13 @@ static int menu_open;                 /* while the menu is shown, home-screen dr
 static int vfo_cur;                   /* 0 = VFO A, 1 = VFO B */
 static const char *const step_name[] = { "100 Hz", "1 kHz", "2.5 kHz", "5 kHz", "6.25 kHz", "10 kHz", "12.5 kHz", "25 kHz", "50 kHz", "100 kHz" };
 #define Y_FREQ    42
-#define Y_CHIPS1  104
-#define Y_CHIPS2  140
-#define Y_SEP1    178
-#define Y_STATUS  186
+#define Y_VFO2    98       /* the other VFO, small, under the main frequency */
+#define Y_CHIPS1  120
+#define Y_CHIPS2  153
+#define Y_SEP1    186
+#define Y_STATUS  189
 #define STATUS_H  38
-#define Y_INFO    230
+#define Y_INFO    231
 #define Y_SEP2    252
 #define Y_MLABEL  256
 #define Y_METER   278
@@ -1368,6 +1369,19 @@ static void show_chips(void)
     if (tone_chip_text(tx, "TX ", tone_type, tone_val)) { r2[n] = tx; c2[n++] = P->txt; }
     if (tone_chip_text(rx, "RX ", rx_tone_type, rx_tone_val)) { r2[n] = rx; c2[n++] = P->rxt; }
     chip_row(Y_CHIPS2, r2, c2, n);
+}
+
+static void show_info(void)
+{
+    if (menu_open) return;
+    char s[24] = "SQ ";
+    int p = 3;
+    s[p++] = (char)('0' + sq_level);
+    for (const char *q = "    STEP "; *q; q++) s[p++] = *q;
+    for (const char *q = step_name[step_idx]; *q; q++) s[p++] = *q;
+    s[p] = 0;
+    lcd_fill(0, Y_INFO, LCD_W, F_SMALL->height, C_BLACK);
+    aa_text_c(Y_INFO, F_SMALL, s, P->dim, C_BLACK);
 }
 
 /* "446.006" large, "25" smaller on the same baseline, centred. */
@@ -1550,7 +1564,8 @@ static void draw_home(void)
 {
     /* Clear only the bands between sections; each section paints its own area. */
     clear_band(34, Y_FREQ);
-    clear_band(Y_FREQ + font_big.height, Y_CHIPS1);
+    clear_band(Y_FREQ + font_big.height, Y_VFO2);
+    clear_band(Y_VFO2 + F_SMALL->height, Y_CHIPS1);
     clear_band(Y_CHIPS1 + CHIP_H, Y_CHIPS2);
     clear_band(Y_CHIPS2 + CHIP_H, Y_STATUS);
     lcd_fill(0, Y_STATUS, 8, STATUS_H, C_BLACK);
@@ -1566,7 +1581,7 @@ static void draw_home(void)
     top_bar();
     show_freq();
     show_status(status_text, status_fg);
-    show_vfo2();
+    show_info();
     show_batt();
     meter_scale();
     meter_bars = -1;
@@ -1678,7 +1693,7 @@ static void report_freq(void);
 
 /* Spectrum: 44 points around the current frequency at the menu step, signal strength as bars. */
 #define SPEC_N   44
-#define SPEC_TOP 104
+#define SPEC_TOP Y_CHIPS1
 #define SPEC_H   136
 static void spectrum_start(void)
 {
@@ -1788,7 +1803,7 @@ static void fdet_poll(void)
 }
 
 /* ---------------- dual watch (radio chip 2) ---------------- */
-/* Chip 2 listens on the other VFO, shown on the line above the meter (init as stock 0x8003D34, tuning as
+/* Chip 2 listens on the other VFO, shown on the small line under the main frequency (init as stock 0x8003D34, tuning as
  * 0x8003CCC, receive filter 0x33 bit 4 as 0x8003F30). When it hears a signal while chip 1 is quiet, chip 1
  * listens there too so the signal is heard; the top of the screen and transmit stay on the main VFO or
  * channel. Chip 1 comes back 2 s after the signal ends, or at once on a key, PTT or a serial command that
@@ -1831,8 +1846,8 @@ static void dw_start(void)
     show_vfo2();
 }
 
-/* The other VFO on the line above the meter, small, receive only: green while chip 1 is listening to
- * it, dim with dual watch off. */
+/* The other VFO on a small line under the main frequency, receive only: green while chip 1 is listening
+ * to it, dim with dual watch off. */
 static void show_vfo2(void)
 {
     if (menu_open || spectrum_on) return;
@@ -1845,8 +1860,8 @@ static void show_vfo2(void)
     s[p++] = ' '; s[p++] = ' ';
     for (const char *q = mode_name[v->mode % NMODES]; *q; q++) s[p++] = *q;
     s[p] = 0;
-    lcd_fill(0, Y_INFO, LCD_W, F_SMALL->height, C_BLACK);
-    aa_text_c(Y_INFO, F_SMALL, s, !dw_on ? P->dim : dw_hop ? C_GREEN : P->light, C_BLACK);
+    lcd_fill(0, Y_VFO2, LCD_W, F_SMALL->height, C_BLACK);
+    aa_text_c(Y_VFO2, F_SMALL, s, !dw_on ? P->dim : dw_hop ? C_GREEN : P->light, C_BLACK);
 }
 
 /* Chip 1 to the other VFO's frequency, mode and receive tone, without changing the main VFO. */
@@ -2628,7 +2643,7 @@ static void command(char *cmd)
         int v;
         if (!parse_int(cmd + 3, &v) || v < 0 || v > 9) { uart_puts("ERR SQ 0-9\r\n"); return; }
         sq_level = v;
-        show_vfo2();
+        show_info();
         uart_puts("SQ "); put_dec(sq_level); uart_puts("\r\n");
     } else if (cmd[0] == 'V' && cmd[1] == 'O' && cmd[2] == 'L' && cmd[3] == ' ') {
         int v;
@@ -2925,7 +2940,7 @@ int main(void)
     dw_start();                                    /* dual watch is always on at start-up */
     show_freq();
     show_status("RX", C_GREEN);
-    show_vfo2();
+    show_info();
     show_batt();
     meter_scale();
     report_freq();
@@ -3076,7 +3091,7 @@ int main(void)
                 } else if (k == '*') {
                     if (chan_mode) chan_leave();
                     vfo_select(vfo_cur ^ 1);
-                    show_vfo2();
+                    show_info();
                     changed = 1;
                 } else if ((k == K_UP || k == K_DOWN) && chan_mode) {
                     int n = chan_next(chan_num, k == K_UP ? 1 : -1);
