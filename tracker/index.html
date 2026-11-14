@@ -78,7 +78,10 @@ footer ul { padding-left: 1.2em; }
       <button type="button" data-vol="-4">Volume down</button>
       <button type="button" data-vol="4">Volume up</button>
       <button type="button" id="connect" hidden>Connect radio</button>
+      <button type="button" id="unfollow" hidden>Stop following</button>
     </div>
+    <label><input type="checkbox" id="follow" checked style="width:auto;min-height:0"> Follow Doppler during the pass (Tune buttons)</label>
+    <p id="follow-status" class="meta"></p>
     <form id="manual" class="row" style="margin-top:10px">
       <label>Frequency in MHz <input id="mf" inputmode="decimal" autocomplete="off" required></label>
       <label>Mode <select id="mm"><option>USB</option><option>NFM</option><option>FM</option><option>AM</option></select></label>
@@ -148,10 +151,18 @@ function statusText(s) {
 async function pollRadio() {
   try {
     const r = await api('/api/radio');
-    if (r.connected && r.status) { $('#radio-status').textContent = statusText(r.status); $('#connect').hidden = true; }
+    if (r.connected && r.status) { $('#radio-status').textContent = statusText(r.status); $('#connect').hidden = true; showFollow(r.follow); }
     else if (r.connected) { $('#radio-status').textContent = 'Connected, waiting for a status line…'; }
     else { $('#radio-status').textContent = `Not connected: ${r.error}`; $('#connect').hidden = false; }
   } catch (e) { $('#radio-status').textContent = 'The page server is not answering.'; }
+}
+
+function showFollow(f) {
+  const on = f && f.label;
+  $('#unfollow').hidden = !on;
+  $('#follow-status').textContent = on
+    ? `Following ${f.label}: Doppler ${f.doppler_hz > 0 ? '+' : ''}${f.doppler_hz} Hz${f.trim_hz ? `, trim ${f.trim_hz > 0 ? '+' : ''}${f.trim_hz} Hz` : ''}${f.error ? ` (problem: ${f.error})` : ''}.`
+    : (f && f.ended ? `Stopped following: ${f.ended}.` : '');
 }
 
 async function run(btn, path, body, describe) {
@@ -178,6 +189,7 @@ document.querySelectorAll('[data-step]').forEach(b => b.addEventListener('click'
 document.querySelectorAll('[data-vol]').forEach(b => b.addEventListener('click', () =>
   run(b, '/api/radio', { volume_delta: +b.dataset.vol }, r => `${b.textContent}: ${statusText(r.status)}`)));
 $('#connect').addEventListener('click', e => run(e.target, '/api/connect', {}, r => 'Radio connected.'));
+$('#unfollow').addEventListener('click', e => run(e.target, '/api/follow', { stop: true }, r => { showFollow(r.follow); return 'Stopped following.'; }));
 $('#manual').addEventListener('submit', e => {
   e.preventDefault();
   const f = parseFloat($('#mf').value.replace(',', '.'));
@@ -216,7 +228,7 @@ function txRow(p, x) {
   if (x.rig) {
     const label = `${mhz(x.rig.freq_hz)} MHz ${x.rig.mode}`;
     cell = el('button', { type: 'button', class: 'tune', 'aria-label': `Tune the iRadio to ${p.display}, ${desc}, ${label}` }, `Tune ${label}`);
-    cell.addEventListener('click', () => run(cell, '/api/tune', { freq_hz: x.rig.freq_hz, mode: x.rig.mode, sat_id: p.sat_id }, r => tuned(r, `${p.display} ${desc}`)));
+    cell.addEventListener('click', () => run(cell, '/api/tune', { freq_hz: x.rig.freq_hz, mode: x.rig.mode, sat_id: p.sat_id, follow: $('#follow').checked, label: `${p.display} ${desc}` }, r => { showFollow(r.follow); return tuned(r, `${p.display} ${desc}`); }));
   } else cell = 'out of range';
   return el('tr', {}, el('th', { scope: 'row' }, desc),
     el('td', { class: 'num', 'data-label': 'Downlink' }, range(x.downlink_low, x.downlink_high)),

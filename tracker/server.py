@@ -57,6 +57,9 @@ sats = {}
 state_lock = threading.Lock()
 radio = {"dev": None, "error": None}
 radio_lock = threading.Lock()
+# Doppler follow: the satellite downlink being tracked, retuned as the shift changes.
+follow = {"on": None, "ended": None}
+follow_lock = threading.Lock()
 
 
 def parse_tle_text(text):
@@ -352,6 +355,42 @@ def doppler(sat_id, freq_hz):
     return int(round(f)), int(round(f - freq_hz))
 
 
+def follower():
+    """While following, retune when the Doppler-corrected frequency has moved by 50 Hz (USB) or
+    500 Hz (FM, AM); stop when the satellite sets."""
+    while True:
+        time.sleep(1)
+        with follow_lock:
+            f = dict(follow["on"]) if follow["on"] else None
+        if not f:
+            continue
+        s = sats.get(f["sat_id"])
+        if not s or look(s["sat"], ts.now())[0] <= 0:
+            with follow_lock:
+                follow["on"], follow["ended"] = None, f"{f['label']}: satellite has set"
+            continue
+        target, shift = doppler(f["sat_id"], f["freq_hz"])
+        target += f["trim"]
+        if abs(target - f["last_hz"]) < (50 if f["mode"] == "USB" else 500):
+            continue
+        try:
+            get_radio().tune(target, f["mode"])
+            with follow_lock:
+                if follow["on"] and follow["on"]["sat_id"] == f["sat_id"]:
+                    follow["on"].update(last_hz=target, doppler_hz=shift, error=None)
+        except Exception as e:
+            with follow_lock:
+                if follow["on"]:
+                    follow["on"]["error"] = str(e)
+
+
+def follow_info():
+    with follow_lock:
+        on = follow["on"]
+        return {"label": on["label"], "doppler_hz": on["doppler_hz"], "trim_hz": on["trim"],
+                "error": on.get("error")} if on else {"ended": follow["ended"]}
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass
@@ -380,7 +419,7 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path == "/api/radio":
             try:
                 s = get_radio().get_status()
-                self.send_json({"connected": True, "status": s})
+                self.send_json({"connected": True, "status": s, "follow": follow_info()})
             except Exception as e:
                 self.send_json({"connected": False, "error": str(e)})
         else:
@@ -401,11 +440,25 @@ class Handler(BaseHTTPRequestHandler):
                 if req.get("doppler", True) and req.get("sat_id"):
                     freq, shift = doppler(req["sat_id"], freq)
                 s = dev.tune(freq, req["mode"])
+                with follow_lock:
+                    follow["ended"] = None
+                    follow["on"] = {"sat_id": req["sat_id"], "freq_hz": int(req["freq_hz"]), "mode": req["mode"],
+                                    "trim": 0, "last_hz": freq, "doppler_hz": shift,
+                                    "label": req.get("label") or str(req["sat_id"])} \
+                        if req.get("follow") and req.get("sat_id") else None
                 self.send_json({"ok": True, "status": s, "requested_hz": int(req["freq_hz"]),
-                                "tuned_hz": freq, "doppler_hz": shift})
+                                "tuned_hz": freq, "doppler_hz": shift, "follow": follow_info()})
+            elif self.path == "/api/follow":
+                with follow_lock:
+                    follow["on"], follow["ended"] = None, None
+                self.send_json({"ok": True, "follow": follow_info()})
             elif self.path == "/api/radio":
                 if "step_hz" in req:
                     s = dev.step(int(req["step_hz"]))
+                    with follow_lock:                 # while following, a fine-tune step is a trim
+                        if follow["on"]:
+                            follow["on"]["trim"] += int(req["step_hz"])
+                            follow["on"]["last_hz"] += int(req["step_hz"])
                 elif "volume_delta" in req:
                     s = dev.set_volume(dev.volume + int(req["volume_delta"]))
                 else:
@@ -429,5 +482,6 @@ def connect_at_start():
 if __name__ == "__main__":
     threading.Thread(target=refresher, daemon=True).start()
     threading.Thread(target=connect_at_start, daemon=True).start()
+    threading.Thread(target=follower, daemon=True).start()
     print(f"Satellite tracker on http://localhost:{PORT}  ({SITE_NAME})", flush=True)
     ThreadingHTTPServer((HOST, PORT), Handler).serve_forever()
