@@ -4,7 +4,7 @@ I got sick of people selling simple knowledge or "personalised" firmware.  open 
 
 Open firmware for the iRadio UV-98 Plus handheld (Radtel RT-880G family, FCC ID 2AZSA-6D880), written from scratch. This repository also holds the tools and notes needed to repeat the work from zero.
 
-**Status: experimental test firmware (test 8). It is not yet a usable everyday radio.** It has been run on one UV-98 Plus only. That radio's calibration values (frequency correction words, transmit deviation) are built into `firmware/src/main.c`. On another radio the frequency may be slightly off until the firmware reads each radio's own calibration from its SPI flash; [FINDINGS.md](FINDINGS.md) lists where those values are.
+**Status: experimental test firmware (test 11). It is not yet a usable everyday radio.** It has been run on one UV-98 Plus only. That radio's calibration values (frequency correction words, transmit deviation) are built into `firmware/src/main.c`. On another radio the frequency may be slightly off until the firmware reads each radio's own calibration from its SPI flash; [FINDINGS.md](FINDINGS.md) lists where those values are.
 
 | Works on that radio | Test |
 |---|---|
@@ -14,8 +14,12 @@ Open firmware for the iRadio UV-98 Plus handheld (Radtel RT-880G family, FCC ID 
 | Noise squelch (tested on NFM, PMR446) | 7 |
 | Transmit a 1 kHz tone on PMR446, heard on another radio | 7 |
 | Voice transmit at minimum power on PMR446 (heard on another radio, but the audio is low) | 8 |
+| Stock transmit audio settings; voice clearly heard at mic gain 31 (the stock 18 is too quiet) | 9 |
+| Transmit on the amateur bands; 1750 Hz burst on the alarm button, heard on another radio | 10 |
+| Power levels from calibration, 60 s time-out timer, CTCSS/DCS on transmit, USB receive | 10 (built, being tested) |
+| CTCSS/DCS tone squelch on receive; starts on PMR 1 NFM | 11 (built, being tested) |
 
-Next steps: finish transmit (power levels, amplifier per band, time-out timer, CTCSS/DCS), channels from the radio's SPI flash, settings and menus, the second radio chip and FM broadcast.
+Next steps: channels and settings from the radio's SPI flash, menus (mic gain, power, tones and the rest), a stock-style screen, automatic gain control for USB, the second radio chip, FM broadcast and scanning.
 
 ## Known problem: switching off while transmitting
 
@@ -23,9 +27,10 @@ If the radio is switched off while it is transmitting, the radio chip keeps its 
 
 ## Transmit limits in this firmware
 
-- PMR446 only (446.000-446.200 MHz); PTT is refused on any other frequency.
-- Minimum power: radio chip power level 8 (register 0x36 = 0x20FF), external UHF power amplifier off.
-- 5-second limit per press, then locked out until PTT is released. Watchdog on.
+- Amateur bands only: the allocations of all three ITU regions that the radio chip can tune (17 m, 15 m, 12 m, 10 m, 8 m, 6 m, 4 m, 2 m, 1.25 m, 70 cm including PMR446, 33 cm, 23 cm; see `tx_ranges` in `firmware/src/main.c`). Transmit is refused on any other frequency. Whether the radio actually radiates on HF, 6 m, 4 m, 33 cm and 23 cm has not been tested.
+- Power: `MIN` by default (radio chip power level 8, register 0x36 = 0x20FF, no external amplifier). `POW LOW`, `POW MID` and `POW HIGH` use this radio's calibration tables with the band's amplifier switched on, as the stock firmware does.
+- 60-second time-out timer, then locked out until PTT1 and the alarm button are released. Watchdog on.
+- The radio starts on PMR446 channel 1, 446.00625 MHz NFM.
 
 Check your local rules before transmitting.
 
@@ -83,7 +88,7 @@ Switch the radio on normally, then switch it off **without pressing PTT** (see t
 
 ```sh
 python3 tools/flash.py probe --model uv98                  # optional: connect only, erases nothing
-python3 tools/flash.py flash --model uv98 --image bin/uv98plus_openfw_test8.bin --yes
+python3 tools/flash.py flash --model uv98 --image bin/uv98plus_openfw_test11.bin --yes
 ```
 
 The flash takes about 30 seconds: 246 blocks of 1 KB, each acknowledged. When it prints `final reply 6`, switch the radio off and then on normally.
@@ -97,7 +102,7 @@ cd firmware
 make
 ```
 
-This produces `firmware/build/uv98plus_openfw.bin`. The code is identical to `bin/uv98plus_openfw_test8.bin`; only the build time that the `VER` command prints differs.
+This produces `firmware/build/uv98plus_openfw.bin`. The code is identical to `bin/uv98plus_openfw_test11.bin`; only the build time that the `VER` command prints differs.
 
 ## Using the test firmware
 
@@ -106,11 +111,25 @@ This produces `firmware/build/uv98plus_openfw.bin`. The code is identical to `bi
 | 0-9, then # | Enter a frequency in kHz and tune to it (red bar clears the entry) |
 | * | PMR446 channel 1, 446.00625 MHz NFM |
 | Up / down | Step 12.5 kHz |
-| Green bar | Cycle the mode: FM, NFM, AM |
+| Green bar | Cycle the mode: FM, NFM, AM, USB |
 | PTT2 or monitor (side keys) | Open the squelch while held |
-| PTT1 | Transmit (PMR446 only, see the limits above) |
+| PTT1 | Transmit voice (amateur bands only, see the limits above) |
+| Alarm button (top) | Transmit a 1750 Hz burst while held; pressed while PTT1 is held, it replaces the voice until released |
 
-The same cable gives a serial console at 115200 baud: `PING`, `VER`, `F [MHz]`, `M FM|NFM|AM`, `SQ 0-9`, `VOL 0-63`, `RSSI`, `ADC`, `R1 xx` / `R2 xx` (read register xx of radio chip 1 or 2) and `HELP`.
+The same cable gives a serial console at 115200 baud:
+
+| Command | Action |
+|---|---|
+| `PING`, `VER`, `HELP` | Check the link, firmware version, command list |
+| `F [MHz]` | Show or set the frequency |
+| `M FM\|NFM\|AM\|USB` | Set the mode |
+| `SQ 0-9`, `VOL 0-63` | Squelch level (0 = open), receive audio level |
+| `MIC [0-31]` | Show or set the mic gain (default 25); works while transmitting |
+| `POW [MIN\|LOW\|MID\|HIGH]` | Show or set the transmit power (default MIN) |
+| `T [OFF\|88.5\|D023N\|D023I]` | Transmit tone: CTCSS in Hz, or DCS normal / inverted |
+| `RT [OFF\|88.5\|D023N\|D023I]` | Receive tone squelch: audio opens only with that tone (FM / NFM) |
+| `RSSI`, `ADC` | Signal strength; side-key and battery ADC readings |
+| `R1 xx`, `R2 xx` | Read register xx of radio chip 1 or 2 |
 
 ## Files
 
@@ -121,7 +140,7 @@ The same cable gives a serial console at 115200 baud: `PING`, `VER`, `F [MHz]`, 
 | `firmware/src/font.h`, `firmware/tools/mkfont.py` | 16x24 screen font and its generator |
 | `firmware/tools/check_image.py` | Checks an image before it is flashed (size, stack pointer, reset vector) |
 | `firmware/lib/at32f423/` | The parts of Artery's AT32F423 library the build uses (see [ATTRIBUTION.md](ATTRIBUTION.md)) |
-| `bin/uv98plus_openfw_test8.bin` | Test 8 image, the one flashed to our radio (`bin/SHA256SUMS`) |
+| `bin/uv98plus_openfw_test11.bin` | Test 11 image, the one now on our radio (`bin/SHA256SUMS`); `bin/uv98plus_openfw_test8.bin` is the earlier test 8 |
 | `tools/flash.py` | Bootloader flasher (`probe` / `flash`, `--model uv98` or `rt880`) |
 | `tools/backup_spi.py` | 4 MB SPI flash backup (stock firmware) |
 | `tools/extract_upgrade_tool.py` | Extracts the official firmware from iRadio's upgrade tool |

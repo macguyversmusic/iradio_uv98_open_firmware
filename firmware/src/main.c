@@ -1,9 +1,11 @@
-/* UV-98 Plus / RT-880G open firmware, test 8: receive audio, squelch, side keys, PMR446 voice TX at minimum power.
- * Pin map and stock sequences: ../FINDINGS.md. Only BK4819 #1 is written; #2 is read only. */
+/* UV-98 Plus / RT-880G open firmware, test 10: receive FM/NFM/AM/USB, squelch, side keys, voice TX on
+ * the amateur bands (power MIN by default, LOW/MID/HIGH from calibration), CTCSS/DCS on TX, 1750 Hz
+ * burst on the alarm button, 60 s time-out timer, CTCSS/DCS tone squelch on receive (test 11).
+ * Pin map and stock sequences: ../FINDINGS.md. BK4819 #1 is the radio; #2 is reset and put to sleep. */
 #include "at32f423.h"
 #include "font.h"
 
-#define FW_NAME  "UV98+ open test 8"
+#define FW_NAME  "UV98+ open test 11"
 #define APP_BASE 0x08002800u
 
 /* ---------------- timing ---------------- */
@@ -72,10 +74,9 @@ static void bk_byte(const bkbus_t *b, uint8_t v)
     }
 }
 
-/* Chip 1 only. */
-static void bk1_write(uint8_t reg, uint16_t val)
+static void bk_write(int n, uint8_t reg, uint16_t val)
 {
-    const bkbus_t *b = &bk[0];
+    const bkbus_t *b = &bk[n];
     gpio_bits_reset(b->ck_port, b->ck);
     gpio_bits_reset(b->cs_port, b->cs);
     bk_byte(b, reg & 0x7F);
@@ -83,6 +84,7 @@ static void bk1_write(uint8_t reg, uint16_t val)
     bk_byte(b, (uint8_t)val);
     gpio_bits_set(b->cs_port, b->cs);
 }
+static void bk1_write(uint8_t reg, uint16_t val) { bk_write(0, reg, val); }
 
 static uint16_t bk_read(int n, uint8_t reg)
 {
@@ -109,7 +111,8 @@ static uint16_t bk_read(int n, uint8_t reg)
 }
 
 /* ---------------- transmit path off ---------------- */
-/* MCU amplifier pins PC15/PB11 low; BK4819 #1: PA power 0, its GPIO outputs (0x33) 0, RF off. */
+/* MCU amplifier pins PC15/PB11 low; BK4819 #1: PA power 0, its GPIO outputs (0x33) 0, RF off,
+ * then the stock sleep pair (0x80052B0: 0x30 = 0, 0x37 = 0x1D00). */
 static void tx_kill(void)
 {
     gpio_bits_reset(GPIOC, GPIO_PINS_15);
@@ -117,6 +120,7 @@ static void tx_kill(void)
     bk1_write(0x36, 0x007F);
     bk1_write(0x33, 0x0000);
     bk1_write(0x30, 0x0000);
+    bk1_write(0x37, 0x1D00);
 }
 
 /* ---------------- start-up cleanup and faults ---------------- */
@@ -394,21 +398,97 @@ static const band_t bands[] = {
 };
 #define NBANDS (sizeof bands / sizeof bands[0])
 
-/* PMR446: 446.00625-446.19375 MHz. The only range test 4 transmits in. */
-#define PMR_LO 44600000u
-#define PMR_HI 44620000u
-/* Minimum power for testing: BK4819 PA level 8, external UHF amplifier (0x33 bit 2) left off.
- * (Calibrated low at 446 MHz is level 0x16 with the amplifier on.) */
-#define TX_POWER_REG ((8u << 10) | 0xFF)
-#define TX_MIC_GAIN  0xE952   /* 0x7D: 0xE940 + this radio's mic gain setting (0xAD = 0x12) */
+/* Transmit is allowed only inside these ranges (10 Hz units, [lo, hi)): the amateur
+ * allocations of all three ITU regions that this chip can tune, plus PMR446. */
+static const struct { uint32_t lo, hi; } tx_ranges[] = {
+    {   1806800,   1816800 },   /* 17 m   18.068-18.168 */
+    {   2100000,   2145000 },   /* 15 m   21.000-21.450 */
+    {   2489000,   2499000 },   /* 12 m   24.890-24.990 */
+    {   2800000,   2970000 },   /* 10 m   28.000-29.700 */
+    {   4066000,   4070000 },   /* 8 m    40.660-40.700 (some Region 1 countries) */
+    {   5000000,   5400000 },   /* 6 m    50-54 */
+    {   6990000,   7050000 },   /* 4 m    69.9-70.5 (some Region 1 countries) */
+    {  14400000,  14800000 },   /* 2 m    144-148 */
+    {  21900000,  22500000 },   /* 1.25 m 219-225 (Region 2) */
+    {  42000000,  45000000 },   /* 70 cm  420-450 (includes PMR446) */
+    {  90200000,  92800000 },   /* 33 cm  902-928 (Region 2) */
+    { 124000000, 130000000 },   /* 23 cm  1240-1300 */
+};
+/* Transmit power. MIN (the default): BK4819 PA level 8 with no external amplifier. LOW, MID, HIGH:
+ * stock levels (0x80053F0 / 0x8004F0C) from this radio's calibration, with the band's amplifier on. */
+enum { PWR_MIN, PWR_LOW, PWR_MID, PWR_HIGH };
+static const char *const power_name[] = { "MIN", "LOW", "MID", "HIGH" };
+static int power = PWR_MIN;
+#define TX_POWER_MIN ((8u << 10) | 0xFF)
+
+/* This radio's power calibration (SPI 0x20 + block * 0x70: +0x10 high, +0x20 low), one entry per
+ * 5 MHz from the base, capped at entry 15 (stock 0x8012A30). Ranges inclusive, checked in order. */
+typedef struct { uint32_t lo, hi, base; uint8_t high[16], low[16]; } pwr_cal_t;
+static const pwr_cal_t pwr_cal[] = {
+    {  13600000,  17400000,  13500000,   /* block 0 */
+       { 0x28,0x28,0x27,0x28,0x29,0x29,0x29,0x2B,0x37,0x37,0x37,0x37,0x37,0x37,0x37,0x37 },
+       { 0x14,0x14,0x14,0x14,0x14,0x15,0x16,0x17,0x19,0x19,0x19,0x19,0x19,0x19,0x19,0x19 } },
+    {  40000000,  48000000,  40000000,   /* block 1 */
+       { 0x2C,0x29,0x29,0x29,0x2A,0x2B,0x2C,0x2C,0x2C,0x2C,0x2C,0x2C,0x2C,0x2C,0x2C,0x2C },
+       { 0x1C,0x1B,0x1A,0x19,0x18,0x17,0x17,0x17,0x17,0x16,0x16,0x16,0x16,0x16,0x16,0x16 } },
+    {   1800000,   6400000,   1500000,   /* block 2 */
+       { 0x37,0x37,0x23,0x26,0x37,0x37,0x37,0x37,0x37,0x37,0x37,0x37,0x37,0x37,0x37,0x37 },
+       { 0x19,0x19,0x19,0x19,0x19,0x19,0x19,0x19,0x19,0x19,0x19,0x19,0x19,0x19,0x19,0x19 } },
+    {   6400000,  13600000,   6000000,   /* block 3 */
+       { 0x37,0x37,0x37,0x37,0x37,0x37,0x37,0x37,0x37,0x37,0x37,0x37,0x37,0x37,0x37,0x37 },
+       { 0x19,0x19,0x19,0x19,0x19,0x19,0x19,0x19,0x19,0x19,0x19,0x19,0x19,0x19,0x19,0x19 } },
+    {  17400000,  24000000,  17000000,   /* block 4 */
+       { 0x2D,0x2D,0x2D,0x2D,0x2D,0x2D,0x2D,0x2D,0x2D,0x2D,0x2D,0x2D,0x2D,0x2D,0x0F,0x37 },
+       { 0x19,0x19,0x19,0x19,0x19,0x19,0x19,0x19,0x19,0x19,0x19,0x19,0x19,0x0F,0x0F,0x19 } },
+    {  84000000,  92000000,  84000000,   /* block 9 */
+       { 0x32,0x32,0x32,0x32,0x32,0x32,0x32,0x32,0x32,0x32,0x32,0x32,0x32,0x32,0x32,0x32 },
+       { 0x19,0x19,0x19,0x19,0x19,0x19,0x19,0x19,0x19,0x19,0x19,0x19,0x19,0x19,0x19,0x19 } },
+    {  92000000, 100000000,  92000000,   /* block 10 */
+       { 0x37,0x37,0x37,0x37,0x37,0x37,0x37,0x37,0x37,0x37,0x37,0x37,0x37,0x37,0x37,0x37 },
+       { 0x19,0x19,0x19,0x19,0x19,0x19,0x19,0x19,0x19,0x19,0x19,0x19,0x19,0x19,0x19,0x19 } },
+    { 124000000, 130000000, 124000000,   /* block 13 from 1240 MHz */
+       { 0x37,0x37,0x37,0x37,0x37,0x37,0x37,0x37,0x37,0x37,0x37,0x37,0x37,0x37,0x37,0x37 },
+       { 0x19,0x19,0x19,0x19,0x19,0x19,0x19,0x19,0x19,0x19,0x19,0x19,0x19,0x19,0x19,0x19 } },
+};
+
+/* 0x36 value for the current power level at f; 0 means use TX_POWER_MIN without the amplifier. */
+static uint16_t power_reg(uint32_t f)
+{
+    if (power == PWR_MIN) return 0;
+    for (unsigned i = 0; i < sizeof pwr_cal / sizeof pwr_cal[0]; i++) {
+        const pwr_cal_t *c = &pwr_cal[i];
+        if (f < c->lo || f > c->hi) continue;
+        uint32_t idx = (f - c->base) / 500000u;
+        if (idx > 15) idx = 15;
+        uint8_t v = power == PWR_HIGH ? c->high[idx]
+                  : power == PWR_LOW  ? c->low[idx]
+                  : (uint8_t)((c->high[idx] + c->low[idx]) >> 1);
+        return (uint16_t)(((v & 0x3Fu) << 10) | 0x7Fu | (v ? 0x80u : 0));
+    }
+    return 0;
+}
+/* Mic gain 0-31 (stock menu "MIC Gain", settings 0xAD; this radio 0x12, too quiet in test 9);
+ * 0x7D = 0xE940 + gain. */
+static int mic_gain = 25;
 #define TX_DEVIATION 0x34E2   /* 400-480 MHz calibration block, offset 3 */
-#define TX_MAX_MS    5000
+#define TX_MAX_MS    60000    /* time-out timer */
 
-enum { MODE_FM, MODE_NFM, MODE_AM };
-static const char *const mode_name[] = { "FM", "NFM", "AM" };
+/* 1750 Hz tone burst: tone 1 frequency word, Hz * 10.3 (the stock tone formula, Hz / 10 * 0x67). */
+#define TONE_1750    (175u * 0x67u)
 
-static uint32_t freq10 = 14580000;   /* 145.800 MHz */
-static int mode = MODE_FM;
+/* Transmit tone: CTCSS (value in 0.1 Hz) or DCS normal / inverted (value = the octal code). */
+enum { TONE_OFF, TONE_CTCSS, TONE_DCS_N, TONE_DCS_I };
+static int tone_type;
+static uint16_t tone_val;
+static int rx_tone_type;          /* tone squelch on receive, same types */
+static uint16_t rx_tone_val;
+static void rx_tone(void);
+
+enum { MODE_FM, MODE_NFM, MODE_AM, MODE_USB, NMODES };
+static const char *const mode_name[] = { "FM", "NFM", "AM", "USB" };
+
+static uint32_t freq10 = 44600625;   /* start on PMR446 channel 1, 446.00625 MHz */
+static int mode = MODE_NFM;
 static int tx_on;
 
 static const band_t *band_of(uint32_t f)
@@ -418,10 +498,13 @@ static const band_t *band_of(uint32_t f)
     return 0;
 }
 
-/* Filter bandwidth; audio stays muted until the squelch opens it. */
+/* Filter bandwidth (narrow for NFM and USB); 0x73 bit 4 set for USB as stock does for SSB
+ * (0x8004BF0). Audio stays muted until the squelch opens it. */
 static void radio_mode(void)
 {
-    bk1_write(0x43, mode == MODE_NFM ? 0x4048 : 0x3028);
+    bk1_write(0x43, mode == MODE_NFM || mode == MODE_USB ? 0x4048 : 0x3028);
+    uint16_t r73 = bk_read(0, 0x73);
+    bk1_write(0x73, mode == MODE_USB ? (r73 | 0x0010) : (r73 & ~0x0010u));
     bk1_write(0x47, 0x6040);
 }
 
@@ -458,6 +541,7 @@ static int radio_tune(uint32_t f)
     bk1_write(0x38, (uint16_t)(v & 0xFFFF));
     bk1_write(0x39, (uint16_t)(v >> 16));
     radio_rx_on();
+    rx_tone();
     return 1;
 }
 
@@ -483,8 +567,26 @@ static void radio_init(void)
     bk1_write(0x3E, 0xA037);
     bk1_write(0x7D, 0xE950);
     bk1_write(0x26, 0x13A0);
+    /* Audio response coefficients (stock 0x80038D0), indexes from this radio's calibration
+     * header SPI 0x0008-0x000B = 06 00 06 04: RX 300 Hz, RX 3 kHz, TX 3 kHz, TX 300 Hz. */
+    bk1_write(0x54, 0x8F88);
+    bk1_write(0x55, 0x3201);
+    bk1_write(0x75, 0xFA02);
+    bk1_write(0x74, 0xE61C);
+    bk1_write(0x44, 0x8F88);
+    bk1_write(0x45, 0x3201);
+    bk1_write(0x71, 0x68DC);                                     /* scrambler off (0x8005218) */
+    bk1_write(0x31, bk_read(0, 0x31) & ~0x000Au);                 /* scrambler and compander off */
+    bk1_write(0x51, 0x0000);                                     /* no CTCSS/DCS */
     radio_mode();
     radio_tune(freq10);
+
+    /* Chip 2 is not used yet: stock reset (0x8003D34), then the stock sleep pair (0x8003EC0). */
+    bk_write(1, 0x00, 0x8000);
+    delay_ms(10);
+    bk_write(1, 0x00, 0x0000);
+    bk_write(1, 0x30, 0x0000);
+    bk_write(1, 0x37, 0x1D00);
 }
 
 static int rssi_dbm(void)
@@ -504,13 +606,14 @@ static int sq_level = 3;
 
 static uint16_t rx_gain(void)
 {
-    return (uint16_t)(0xB000 | ((volume & 0x3F) << 4) | (mode == MODE_AM ? 0xC : 0xF));
+    return (uint16_t)(0xB000 | ((volume & 0x3F) << 4) | (mode == MODE_AM || mode == MODE_USB ? 0xC : 0xF));
 }
 
+/* AF mode (stock 0x8005098): 1 FM, 7 AM, 5 SSB. */
 static void audio_open(void)
 {
     bk1_write(0x48, rx_gain());
-    bk1_write(0x47, (uint16_t)(0x6040 | ((mode == MODE_AM ? 7 : 1) << 8)));
+    bk1_write(0x47, (uint16_t)(0x6040 | ((mode == MODE_AM ? 7 : mode == MODE_USB ? 5 : 1) << 8)));
     delay_ms(10);
     gpio_bits_set(GPIOF, GPIO_PINS_8);
     gpio_bits_set(GPIOA, GPIO_PINS_13);
@@ -575,32 +678,113 @@ static int side_key(void)
     return SIDE_NONE;
 }
 
-static int in_pmr(uint32_t f) { return f >= PMR_LO && f < PMR_HI; }
+static int tx_allowed(uint32_t f)
+{
+    for (unsigned i = 0; i < sizeof tx_ranges / sizeof tx_ranges[0]; i++)
+        if (f >= tx_ranges[i].lo && f < tx_ranges[i].hi) return 1;
+    return 0;
+}
 
-/* Voice TX (stock 0x800B22C -> 0x80053F0 / 0x80052D4 with 0x30 = 0xC1FE), PMR446 only,
- * minimum power. Red LED (PA14) on, green (PA13) off. */
-static int tx_start(void)
+/* Voice TX (stock 0x8022270 PTT -> 0x801F828 / 0x8004518, then 0x800B22C -> 0x80053F0 /
+ * 0x80052D4 with 0x30 = 0xC1FE), amateur bands only, minimum power, no external amplifier.
+ * Red LED (PA14) on, green (PA13) off. */
+static int tx_burst;
+
+/* DCS codeword: the 12-bit word (code + 0x800) bit-reversed, Golay (23,12) parity with 0xAE3,
+ * then the 23 bits reversed (stock 0x8009920 / 0x800994C). DCS 023 gives 0x763813. */
+static uint32_t dcs_codeword(uint32_t code)
+{
+    uint32_t x = code + 0x800u, g = 0, r, c = 0;
+    for (int i = 0; i < 12; i++) { g = (g << 1) | (x & 1u); x >>= 1; }
+    g <<= 11;
+    r = g;
+    for (int i = 0; i < 12; i++)
+        if (r >> (22 - i)) r ^= 0xAE3u << (11 - i);
+    r += g;
+    for (int i = 0; i < 23; i++) { c = (c << 1) | (r & 1u); r >>= 1; }
+    return c & 0x7FFFFFu;
+}
+
+/* Tone on transmit (stock 0x8004388). CTCSS: 0x51 = 0x9041, 0x07 = tone (0.1 Hz) * 0x19D / 200.
+ * DCS: 0x51 = 0x802C (normal) or 0xA02C (inverted), 0x07 = 0x0AD7, 0x08 = low 12 bits, then
+ * 0x08 = high bits + 0x8000. */
+static void tone_set(int type, uint16_t val)
+{
+    if (type == TONE_CTCSS) {
+        bk1_write(0x51, 0x9041);
+        bk1_write(0x07, (uint16_t)(((uint32_t)val * 0x19Du / 200u) & 0x1FFF));
+    } else if (type == TONE_DCS_N || type == TONE_DCS_I) {
+        uint32_t cw = dcs_codeword(val);
+        bk1_write(0x51, type == TONE_DCS_I ? 0xA02C : 0x802C);
+        bk1_write(0x07, 0x0AD7);
+        bk1_write(0x08, (uint16_t)(cw & 0xFFFu));
+        bk1_write(0x08, (uint16_t)((cw >> 12) + 0x8000u));
+    } else {
+        bk1_write(0x51, 0x0000);
+    }
+}
+static void tx_tone(void) { tone_set(tone_type, tone_val); }
+static void rx_tone(void) { tone_set(rx_tone_type, rx_tone_val); }
+
+/* Switch the transmit audio between the mic and the 1750 Hz burst (tone path as in test 7). */
+static void tx_audio(int burst)
+{
+    if (burst) {
+        bk1_write(0x71, TONE_1750);
+        bk1_write(0x70, 0xC000);                                 /* tone 1 on */
+        bk1_write(0x47, 0x6040 | (3 << 8));                      /* AF: tone */
+        bk1_write(0x30, 0xC3FA);
+    } else {
+        bk1_write(0x30, 0xC1FE);
+        bk1_write(0x47, 0x6040 | (1 << 8));                      /* AF: FM (microphone) */
+        bk1_write(0x70, 0x0000);
+        bk1_write(0x71, 0x68DC);
+    }
+    tx_burst = burst;
+}
+
+static int tx_start(int burst)
 {
     const band_t *b = band_of(freq10);
-    if (!b || !in_pmr(freq10)) return 0;
+    if (!b || !tx_allowed(freq10)) return 0;
     audio_close();
     gpio_bits_reset(GPIOA, GPIO_PINS_13);
     gpio_bits_set(GPIOA, GPIO_PINS_14);
+    bk1_write(0x31, bk_read(0, 0x31) & ~0x000Au);                 /* scrambler and compander off */
+    bk1_write(0x28, 0x6B38);
+    bk1_write(0x29, 0xAB40);
     bk1_write(0x33, bk_read(0, 0x33) & 0xFFC0);                 /* RX filters and TX amps off */
+    bk1_write(0x47, 0x6040 | (1 << 8));                          /* AF: FM (microphone) */
     if (b->tx_var == 3 || b->tx_var == 4) gpio_bits_reset(GPIOF, GPIO_PINS_0);
     else gpio_bits_set(GPIOF, GPIO_PINS_0);
-    bk1_write(0x40, TX_DEVIATION);
-    bk1_write(0x7D, TX_MIC_GAIN);
+    tx_tone();
+    bk1_write(0x71, 0x68DC);                                     /* scrambler off */
     bk1_write(0x70, 0x0000);                                     /* no tone */
-    bk1_write(0x47, 0x6040 | (1 << 8));                          /* AF: FM (microphone) */
+    bk1_write(0x74, 0xE61C);                                     /* TX 3 kHz response */
+    bk1_write(0x7D, (uint16_t)(0xE940 + mic_gain));
+    bk1_write(0x40, TX_DEVIATION);
     bk1_write(0x37, 0x1D0F);
     delay_ms(10);
     bk1_write(0x52, 0x028F);
     bk1_write(0x30, 0x0200);
     bk1_write(0x30, 0xC1FE);
+    tx_burst = 0;
+    if (burst) tx_audio(1);
     gpio_bits_reset(GPIOC, GPIO_PINS_15);
     gpio_bits_reset(GPIOB, GPIO_PINS_11);
-    bk1_write(0x36, TX_POWER_REG);
+    uint16_t p = power_reg(freq10);
+    if (p) {
+        /* Band amplifier (stock 0x8005354): 1 PC15; 2 PC15 + PB11; 3 0x33 bit 3; 4, 5 0x33 bit 2. */
+        switch (b->tx_var) {
+        case 1: gpio_bits_set(GPIOC, GPIO_PINS_15); break;
+        case 2: gpio_bits_set(GPIOC, GPIO_PINS_15); gpio_bits_set(GPIOB, GPIO_PINS_11); break;
+        case 3: bk1_write(0x33, bk_read(0, 0x33) | 0x0008); break;
+        default: bk1_write(0x33, bk_read(0, 0x33) | 0x0004); break;
+        }
+        bk1_write(0x36, p);
+    } else {
+        bk1_write(0x36, TX_POWER_MIN);
+    }
     tx_on = 1;
     return 1;
 }
@@ -612,8 +796,11 @@ static void tx_stop(void)
     gpio_bits_reset(GPIOB, GPIO_PINS_11);
     bk1_write(0x33, bk_read(0, 0x33) & 0xFFC0);
     bk1_write(0x70, 0x0000);
+    bk1_write(0x71, 0x68DC);
+    bk1_write(0x51, 0x0000);
     bk1_write(0x30, 0x0200);
     tx_on = 0;
+    tx_burst = 0;
     radio_mode();
     radio_tune(freq10);
 }
@@ -721,6 +908,41 @@ static void show_status(const char *s, uint16_t fg)
     lcd_line(9, s, fg, C_BLACK);
 }
 
+/* Tone as text: "T88.5" for CTCSS, "D023N" / "D023I" for DCS, "" when off. */
+static int tone_text_of(int type, uint16_t val, char *s)
+{
+    int p = 0;
+    if (type == TONE_CTCSS) {
+        s[p++] = 'T';
+        if (val >= 1000) s[p++] = (char)('0' + val / 1000);
+        s[p++] = (char)('0' + val / 100 % 10);
+        s[p++] = (char)('0' + val / 10 % 10);
+        s[p++] = '.';
+        s[p++] = (char)('0' + val % 10);
+    } else if (type == TONE_DCS_N || type == TONE_DCS_I) {
+        s[p++] = 'D';
+        s[p++] = (char)('0' + (val >> 6 & 7));
+        s[p++] = (char)('0' + (val >> 3 & 7));
+        s[p++] = (char)('0' + (val & 7));
+        s[p++] = type == TONE_DCS_I ? 'I' : 'N';
+    }
+    s[p] = 0;
+    return p;
+}
+static int tone_text(char *s) { return tone_text_of(tone_type, tone_val, s); }
+
+/* "TX LOW T88.5", "TX MIN 1750" */
+static void show_tx(void)
+{
+    char s[20] = "TX ";
+    int p = 3;
+    for (const char *n = power_name[power]; *n; n++) s[p++] = *n;
+    s[p++] = ' ';
+    if (tx_burst) { s[p++] = '1'; s[p++] = '7'; s[p++] = '5'; s[p++] = '0'; s[p] = 0; }
+    else tone_text(s + p);
+    show_status(s, C_RED);
+}
+
 static void show_entry(const char *e)
 {
     char s[16] = "KHZ ";
@@ -781,6 +1003,32 @@ static void report_freq(void)
     uart_puts("FREQ "); uart_puts(s); uart_puts(" MHZ "); uart_puts(mode_name[mode]); uart_puts("\r\n");
 }
 
+/* "OFF", "88.5" (CTCSS Hz, 60.0-260.0), "D023N" / "D023I" (DCS). Returns 0 if not valid. */
+static int parse_tone(const char *a, int *type, uint16_t *val)
+{
+    if (!__builtin_strcmp(a, "OFF")) { *type = TONE_OFF; *val = 0; return 1; }
+    if (a[0] == 'D') {
+        if (a[1] < '0' || a[1] > '7' || a[2] < '0' || a[2] > '7' || a[3] < '0' || a[3] > '7' ||
+            (a[4] != 'N' && a[4] != 'I') || a[5] != 0) return 0;
+        *type = a[4] == 'I' ? TONE_DCS_I : TONE_DCS_N;
+        *val = (uint16_t)(((a[1] - '0') << 6) | ((a[2] - '0') << 3) | (a[3] - '0'));
+        return 1;
+    }
+    uint32_t v = 0;
+    int digits = 0, dec = -1;
+    for (; *a; a++) {
+        if (*a == '.' && dec < 0) { dec = 0; continue; }
+        if (*a < '0' || *a > '9' || dec >= 1 || ++digits > 4) return 0;
+        v = v * 10 + (uint32_t)(*a - '0');
+        if (dec >= 0) dec++;
+    }
+    if (dec < 1) v *= 10;
+    if (v < 600 || v > 2600) return 0;
+    *type = TONE_CTCSS;
+    *val = (uint16_t)v;
+    return 1;
+}
+
 static void command(char *cmd)
 {
     for (char *p = cmd; *p; p++) if (*p >= 'a' && *p <= 'z') *p = (char)(*p - 32);
@@ -801,8 +1049,8 @@ static void command(char *cmd)
     } else if (cmd[0] == 'M' && cmd[1] == ' ') {
         const char *m = cmd + 2;
         int n = -1;
-        for (int i = 0; i < 3; i++) if (!__builtin_strcmp(m, mode_name[i])) n = i;
-        if (n < 0) { uart_puts("ERR mode FM, NFM or AM\r\n"); return; }
+        for (int i = 0; i < NMODES; i++) if (!__builtin_strcmp(m, mode_name[i])) n = i;
+        if (n < 0) { uart_puts("ERR mode FM, NFM, AM or USB\r\n"); return; }
         if (tx_on) { uart_puts("ERR transmitting\r\n"); return; }
         mode = n;
         audio_close();
@@ -832,8 +1080,43 @@ static void command(char *cmd)
         uint16_t v = bk_read(chip, (uint8_t)reg);
         uart_puts("R"); uart_putc((char)('1' + chip)); uart_puts(" ");
         put_hex(reg, 2); uart_puts(" = "); put_hex(v, 4); uart_puts("\r\n");
+    } else if (cmd[0] == 'T' && (cmd[1] == ' ' || cmd[1] == 0)) {
+        if (cmd[1] == ' ') {
+            if (!parse_tone(cmd + 2, &tone_type, &tone_val)) {
+                uart_puts("ERR T OFF, T 88.5 (CTCSS) or T D023N / T D023I (DCS)\r\n"); return;
+            }
+            if (tx_on) tx_tone();
+        }
+        char s[12];
+        uart_puts("T "); uart_puts(tone_text(s) ? s : "OFF"); uart_puts("\r\n");
+    } else if (cmd[0] == 'R' && cmd[1] == 'T' && (cmd[2] == ' ' || cmd[2] == 0)) {
+        if (cmd[2] == ' ') {
+            if (!parse_tone(cmd + 3, &rx_tone_type, &rx_tone_val)) {
+                uart_puts("ERR RT OFF, RT 88.5 (CTCSS) or RT D023N / RT D023I (DCS)\r\n"); return;
+            }
+            if (!tx_on) rx_tone();
+        }
+        char s[12];
+        uart_puts("RT "); uart_puts(tone_text_of(rx_tone_type, rx_tone_val, s) ? s : "OFF"); uart_puts("\r\n");
+    } else if (cmd[0] == 'P' && cmd[1] == 'O' && cmd[2] == 'W' && (cmd[3] == ' ' || cmd[3] == 0)) {
+        if (cmd[3] == ' ') {
+            int n = -1;
+            for (int i = 0; i < 4; i++) if (!__builtin_strcmp(cmd + 4, power_name[i])) n = i;
+            if (n < 0) { uart_puts("ERR POW MIN, LOW, MID or HIGH\r\n"); return; }
+            if (tx_on) { uart_puts("ERR transmitting\r\n"); return; }
+            power = n;
+        }
+        uart_puts("POW "); uart_puts(power_name[power]); uart_puts("\r\n");
+    } else if (cmd[0] == 'M' && cmd[1] == 'I' && cmd[2] == 'C' && (cmd[3] == ' ' || cmd[3] == 0)) {
+        int v;
+        if (cmd[3] == ' ') {
+            if (!parse_int(cmd + 4, &v) || v < 0 || v > 31) { uart_puts("ERR MIC 0-31\r\n"); return; }
+            mic_gain = v;
+            if (tx_on) bk1_write(0x7D, (uint16_t)(0xE940 + mic_gain));
+        }
+        uart_puts("MIC "); put_dec(mic_gain); uart_puts("\r\n");
     } else if (!__builtin_strcmp(cmd, "HELP")) {
-        uart_puts("PING, VER, F [MHz], M FM|NFM|AM, RSSI, SQ 0-9, VOL 0-63, ADC, R1 xx, R2 xx. TX: PTT1 on PMR446 only.\r\n");
+        uart_puts("PING, VER, F [MHz], M FM|NFM|AM|USB, RSSI, SQ 0-9, VOL 0-63, MIC [0-31], POW [MIN|LOW|MID|HIGH], T [OFF|67.0|D023N|D023I], RT [same, receive], ADC, R1 xx, R2 xx. TX: PTT1 voice, alarm button 1750 Hz, amateur bands only.\r\n");
     } else {
         uart_puts("ERR unknown command, try HELP\r\n");
     }
@@ -898,7 +1181,7 @@ int main(void)
     lcd_init();
     lcd_fill(0, 0, LCD_W, LCD_H, C_BLACK);
     backlight(255);
-    lcd_line(0, "OPEN FW TEST 8", C_YELLOW, C_BLUE);
+    lcd_line(0, "OPEN FW TEST 11", C_YELLOW, C_BLUE);
 
     radio_init();
     show_freq();
@@ -913,7 +1196,7 @@ int main(void)
     char entry[8] = "";
     int elen = 0;
     uint16_t last_m = 0;
-    int last_ptt = 0, tx_lockout = 0;
+    int last_key = 0, tx_lockout = 0, alarm_count = 0;
     uint32_t tx_until = 0;
     uint32_t next_scan = 0, next_rssi = 0, next_blink = 0, next_sq = 0;
     int last_rssi = -160, last_noise = 127, open_count = 0, close_count = 0, last_side = SIDE_NONE;
@@ -935,24 +1218,32 @@ int main(void)
         if ((int32_t)(ticks - next_scan) >= 0) {
             next_scan = ticks + 20;
 
+            /* PTT1 = voice. Alarm button = 1750 Hz burst, alone or while PTT1 is held. */
             int ptt = ptt_down();
-            if (tx_on && (!ptt || (int32_t)(ticks - tx_until) >= 0)) {
-                if (ptt) tx_lockout = 1;
+            alarm_count = side_key() == SIDE_ALARM ? (alarm_count < 2 ? alarm_count + 1 : 2) : 0;
+            int alarm = alarm_count >= 2;
+            int key = ptt || alarm;
+            if (tx_on && (!key || (int32_t)(ticks - tx_until) >= 0)) {
+                if (key) tx_lockout = 1;
                 tx_stop();
-                show_status(tx_lockout ? "RX (5 S LIMIT)" : "RX", tx_lockout ? C_YELLOW : C_GREEN);
-                uart_puts(tx_lockout ? "TX OFF 5 S LIMIT\r\n" : "TX OFF\r\n");
-            } else if (ptt && !last_ptt && !tx_on && !tx_lockout) {
-                if (tx_start()) {
+                show_status(tx_lockout ? "RX (TOT 60 S)" : "RX", tx_lockout ? C_YELLOW : C_GREEN);
+                uart_puts(tx_lockout ? "TX OFF TOT 60 S\r\n" : "TX OFF\r\n");
+            } else if (tx_on && alarm != tx_burst) {
+                tx_audio(alarm);
+                show_tx();
+                uart_puts(alarm ? "TX 1750\r\n" : "TX VOICE\r\n");
+            } else if (key && !last_key && !tx_on && !tx_lockout) {
+                if (tx_start(alarm)) {
                     tx_until = ticks + TX_MAX_MS;
-                    show_status("TX MIN POWER", C_RED);
-                    uart_puts("TX ON\r\n");
+                    show_tx();
+                    uart_puts(alarm ? "TX ON 1750\r\n" : "TX ON\r\n");
                 } else {
-                    show_status("TX PMR446 ONLY", C_YELLOW);
-                    uart_puts("TX REFUSED outside PMR446\r\n");
+                    show_status("TX NOT ALLOWED", C_YELLOW);
+                    uart_puts("TX REFUSED outside the amateur bands\r\n");
                 }
             }
-            if (!ptt) tx_lockout = 0;
-            last_ptt = ptt;
+            if (!key) tx_lockout = 0;
+            last_key = key;
 
             uint16_t m = keys_matrix();
             uint16_t pressed = m & (uint16_t)~last_m;
@@ -981,7 +1272,7 @@ int main(void)
                     uint32_t f = k == K_UP ? freq10 + 1250 : freq10 - 1250;
                     changed = radio_tune(f);
                 } else if (k == K_MENU) {
-                    mode = (mode + 1) % 3;
+                    mode = (mode + 1) % NMODES;
                     audio_close();
                     radio_mode();
                     changed = 1;
@@ -1008,10 +1299,18 @@ int main(void)
             int monitor = side == SIDE_KEY1 || side == SIDE_KEY2;
             int open_noise = 70 - 5 * sq_level;
             int open_rssi = -80 + 2 * sq_level;
-            int carrier = mode == MODE_AM
+            int carrier = mode == MODE_AM || mode == MODE_USB
                 ? last_rssi >= (audio_on ? open_rssi - 3 : open_rssi)
                 : last_noise <= (audio_on ? open_noise + 10 : open_noise);
-            int want = sq_level == 0 || monitor || carrier;
+            int tone_ok = 1;
+            if (rx_tone_type != TONE_OFF && (mode == MODE_FM || mode == MODE_NFM)) {
+                /* Tone match flags in 0x0C (stock 0x8004444): bit 10 CTCSS, 14 DCS normal, 15 DCS inverted. */
+                uint16_t r0c = bk_read(0, 0x0C);
+                tone_ok = rx_tone_type == TONE_CTCSS ? (r0c >> 10) & 1
+                        : rx_tone_type == TONE_DCS_N ? (r0c >> 14) & 1
+                        : (r0c >> 15) & 1;
+            }
+            int want = sq_level == 0 || monitor || (carrier && tone_ok);
             if (want && !audio_on) {
                 close_count = 0;
                 if (++open_count >= 2) {
