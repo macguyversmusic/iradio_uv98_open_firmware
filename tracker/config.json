@@ -1,0 +1,10 @@
+{
+  "name": "Pisac, Cusco, Peru",
+  "lat": -13.4194,
+  "lon": -71.8494,
+  "elev_m": 2972,
+  "timezone": "America/Lima",
+  "host": "127.0.0.1",
+  "port": 8766,
+  "serial_port": null
+}

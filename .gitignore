@@ -1,2 +1,5 @@
 firmware/build/
 __pycache__/
+.venv/
+tracker/cache/
+tracker/keps.txt

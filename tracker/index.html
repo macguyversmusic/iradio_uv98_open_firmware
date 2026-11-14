@@ -1,0 +1,320 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Satellite tracker</title>
+<style>
+:root {
+  --bg: #ffffff; --fg: #111111; --muted: #4a4a4a; --line: #c8c8c8; --panel: #f3f3f3;
+  --accent: #0b57d0; --accent-fg: #ffffff; --now: #0a7d32; --warn: #a33a00; --track: #0b57d0; --track2: #8a8a8a;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f1115; --fg: #f2f2f2; --muted: #b9b9b9; --line: #3a3f48; --panel: #1a1d23;
+    --accent: #8ab4f8; --accent-fg: #0f1115; --now: #5fd38a; --warn: #ffb080; --track: #8ab4f8; --track2: #7c828c;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0f1115; --fg: #f2f2f2; --muted: #b9b9b9; --line: #3a3f48; --panel: #1a1d23;
+  --accent: #8ab4f8; --accent-fg: #0f1115; --now: #5fd38a; --warn: #ffb080; --track: #8ab4f8; --track2: #7c828c;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 18px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+.wrap { max-width: 1200px; margin: 0 auto; padding: 16px; }
+h1 { font-size: 1.6rem; margin: 0 0 12px; }
+h2 { font-size: 1.25rem; margin: 0 0 8px; }
+h3 { font-size: 1.15rem; margin: 0 0 4px; }
+.vh { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 16px; margin-bottom: 16px; }
+#radio-status { font-variant-numeric: tabular-nums; font-size: 1.1rem; margin: 0 0 10px; }
+.row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+button, select, input { font: inherit; }
+button { min-height: 44px; padding: 6px 14px; border-radius: 8px; border: 2px solid var(--accent); background: var(--bg); color: var(--fg); cursor: pointer; }
+button.tune { background: var(--accent); color: var(--accent-fg); font-weight: 600; }
+button:focus-visible, select:focus-visible, input:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+button:disabled { opacity: .55; cursor: wait; }
+select, input { min-height: 44px; padding: 4px 8px; border-radius: 8px; border: 2px solid var(--line); background: var(--bg); color: var(--fg); }
+input { width: 9em; }
+label { display: inline-flex; gap: 6px; align-items: center; }
+#announce { min-height: 1.5em; margin: 10px 0 0; font-weight: 600; }
+.layout { display: grid; grid-template-columns: 1fr; gap: 16px; }
+@media (min-width: 980px) { .layout { grid-template-columns: 360px 1fr; } .sky { position: sticky; top: 16px; align-self: start; } }
+.sky svg { width: 100%; height: auto; display: block; }
+.pass { border-top: 2px solid var(--line); padding: 12px 0 14px; }
+.pass.up h3 .when { color: var(--now); }
+.pass p { margin: 2px 0; }
+.meta { color: var(--muted); font-size: .95rem; }
+.warn { color: var(--warn); }
+table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: .95rem; }
+th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+thead th { color: var(--muted); font-weight: 600; }
+tbody th { font-weight: 500; }
+td.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.tablewrap { overflow-x: auto; }
+footer { color: var(--muted); font-size: .9rem; margin-top: 24px; }
+footer ul { padding-left: 1.2em; }
+@media (max-width: 640px) {
+  table, thead, tbody, tr, th, td { display: block; }
+  thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  tr { border-bottom: 1px solid var(--line); padding: 6px 0; }
+  th, td { border: 0; padding: 2px 0; }
+  td[data-label]::before { content: attr(data-label) ": "; color: var(--muted); }
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Satellite downlinks over <span id="site">…</span></h1>
+
+  <section class="panel" aria-labelledby="radio-h">
+    <h2 id="radio-h">iRadio UV-98 Plus</h2>
+    <p id="radio-status">Checking the radio…</p>
+    <div class="row" role="group" aria-label="Radio controls">
+      <button type="button" data-step="-1000">Tune down 1 kHz</button>
+      <button type="button" data-step="1000">Tune up 1 kHz</button>
+      <button type="button" data-step="-100">Tune down 100 Hz</button>
+      <button type="button" data-step="100">Tune up 100 Hz</button>
+      <button type="button" data-vol="-4">Volume down</button>
+      <button type="button" data-vol="4">Volume up</button>
+      <button type="button" id="connect" hidden>Connect radio</button>
+    </div>
+    <form id="manual" class="row" style="margin-top:10px">
+      <label>Frequency in MHz <input id="mf" inputmode="decimal" autocomplete="off" required></label>
+      <label>Mode <select id="mm"><option>USB</option><option>NFM</option><option>FM</option><option>AM</option></select></label>
+      <button type="submit" class="tune">Tune</button>
+    </form>
+    <p id="announce" role="status" aria-live="polite"></p>
+  </section>
+
+  <div class="panel row" role="group" aria-label="Which passes to show">
+    <label>Show passes <select id="window"><option value="60">now and in the next hour</option><option value="1440">now and in the next 24 hours</option></select></label>
+    <label><input type="checkbox" id="tunable" style="width:auto;min-height:0"> Only satellites the iRadio can receive</label>
+  </div>
+
+  <div class="layout">
+    <section class="sky panel" aria-labelledby="sky-h">
+      <h2 id="sky-h">Sky plot</h2>
+      <svg id="sky" viewBox="-130 -130 260 260" aria-hidden="true"></svg>
+      <p class="meta" id="sky-key">Solid line: in view now. Dashed: coming up. Centre is overhead, edge is the horizon, north at the top.</p>
+    </section>
+    <section aria-labelledby="passes-h">
+      <h2 id="passes-h">Passes</h2>
+      <p id="summary" class="meta">Loading passes…</p>
+      <div id="passes"></div>
+    </section>
+  </div>
+
+  <footer>
+    <p id="data-status"></p>
+    <ul>
+      <li>Heard in the last 24 hours: AMSAT live status (status.amsat.org)</li>
+      <li>Transmitters, uplinks and downlinks: SatNOGS DB (db.satnogs.org)</li>
+      <li>Orbit data, newest set per satellite: CelesTrak, AMSAT daily file, SatNOGS (Space-Track.org)</li>
+    </ul>
+  </footer>
+</div>
+
+<script>
+let TZ = 'UTC';
+let hm = new Intl.DateTimeFormat('en-GB', { timeZone: TZ, hour: '2-digit', minute: '2-digit' });
+const DIRS = ['N','NNE','NE','ENE','E','ESE','SE','SSE','S','SSW','SW','WSW','W','WNW','NW','NNW'];
+const $ = s => document.querySelector(s);
+let data = null, offset = 0, busy = false;
+
+const compass = az => `${DIRS[Math.round(az / 22.5) % 16]} ${Math.round(az)}°`;
+const t = ms => hm.format(new Date(ms));
+const nowMs = () => Date.now() + offset;
+function mins(ms) { const m = Math.round((ms - nowMs()) / 60000); return m <= 0 ? 'now' : m < 60 ? `in ${m} min` : `in ${Math.floor(m / 60)} h ${m % 60} min`; }
+function mhz(hz, dec) { if (hz == null) return ''; const d = dec ?? (hz % 1000 ? 6 : 3); return (hz / 1e6).toFixed(d); }
+function range(lo, hi) { if (!lo) return '—'; return (!hi || hi === lo) ? `${mhz(lo)} MHz` : `${mhz(lo)}–${mhz(hi)} MHz`; }
+function el(tag, attrs, ...kids) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) { if (k === 'class') e.className = v; else if (k.startsWith('on')) e.addEventListener(k.slice(2), v); else e.setAttribute(k, v); }
+  for (const k of kids) if (k != null) e.append(k);
+  return e;
+}
+function say(msg) { const a = $('#announce'); a.textContent = ''; setTimeout(() => { a.textContent = msg; }, 50); }
+
+async function api(path, body) {
+  const r = await fetch(path, body ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {});
+  return r.json();
+}
+
+function statusText(s) {
+  return `${mhz(s.freq_hz, 5)} MHz · ${s.mode} · signal ${s.rssi_dbm} dBm · volume ${s.volume}`;
+}
+
+async function pollRadio() {
+  try {
+    const r = await api('/api/radio');
+    if (r.connected && r.status) { $('#radio-status').textContent = statusText(r.status); $('#connect').hidden = true; }
+    else if (r.connected) { $('#radio-status').textContent = 'Connected, waiting for a status line…'; }
+    else { $('#radio-status').textContent = `Not connected: ${r.error}`; $('#connect').hidden = false; }
+  } catch (e) { $('#radio-status').textContent = 'The page server is not answering.'; }
+}
+
+async function run(btn, path, body, describe) {
+  if (busy) return;
+  busy = true;
+  document.querySelectorAll('button').forEach(b => b.disabled = true);
+  try {
+    const r = await api(path, body);
+    if (r.ok) { if (r.status) $('#radio-status').textContent = statusText(r.status); say(describe(r)); }
+    else say(`Could not do that: ${r.error}`);
+  } catch (e) { say('The page server is not answering.'); }
+  finally { busy = false; document.querySelectorAll('button').forEach(b => b.disabled = false); btn && btn.focus(); }
+}
+
+function tuned(r, label) {
+  const s = r.status;
+  let msg = `Tuned${label ? ' to ' + label : ''}: ${mhz(s.freq_hz, 5)} MHz ${s.mode}.`;
+  if (r.doppler_hz) msg += ` Doppler correction ${r.doppler_hz > 0 ? '+' : ''}${r.doppler_hz} Hz.`;
+  return msg + ` Signal ${s.rssi_dbm} dBm.`;
+}
+
+document.querySelectorAll('[data-step]').forEach(b => b.addEventListener('click', () =>
+  run(b, '/api/radio', { step_hz: +b.dataset.step }, r => `${b.textContent}: ${statusText(r.status)}`)));
+document.querySelectorAll('[data-vol]').forEach(b => b.addEventListener('click', () =>
+  run(b, '/api/radio', { volume_delta: +b.dataset.vol }, r => `${b.textContent}: ${statusText(r.status)}`)));
+$('#connect').addEventListener('click', e => run(e.target, '/api/connect', {}, r => 'Radio connected.'));
+$('#manual').addEventListener('submit', e => {
+  e.preventDefault();
+  const f = parseFloat($('#mf').value.replace(',', '.'));
+  if (!(f > 0)) { say('Type a frequency in MHz first.'); return; }
+  run(e.submitter, '/api/tune', { freq_hz: Math.round(f * 1e6), mode: $('#mm').value }, r => tuned(r));
+});
+
+function filtered() {
+  if (!data) return [];
+  const win = +$('#window').value, only = $('#tunable').checked, end = nowMs() + win * 60000;
+  return data.passes.filter(p => (p.los == null || p.los > nowMs()) && (p.aos == null || p.aos <= end) &&
+    (!only || p.transmitters.some(x => x.rig)));
+}
+const key = p => `${p.sat_id}-${p.aos ?? 'up'}`;
+const isUp = p => (p.aos == null || p.aos <= nowMs()) && (p.los == null || p.los > nowMs());
+
+function whenText(p) {
+  if (isUp(p)) return p.los ? `in view now, sets ${t(p.los)} (${mins(p.los)})` : 'in view now';
+  const hi = p.max_el != null ? `, highest ${Math.round(p.max_el)}°` : '';
+  return `rises ${t(p.aos)} (${mins(p.aos)})${hi}`;
+}
+function geoText(p) {
+  const parts = [];
+  if (p.aos) parts.push(`Rises ${t(p.aos)} at ${compass(p.aos_az)}`);
+  if (p.tca) parts.push(`highest ${p.max_el}° at ${t(p.tca)} (${compass(p.tca_az)})`);
+  if (p.los) parts.push(`sets ${t(p.los)} at ${compass(p.los_az)}`);
+  return parts.join(' · ') + '.';
+}
+const nowText = p => p.now ? `Now: elevation ${Math.round(p.now.el)}°, azimuth ${compass(p.now.az)}, ${p.now.range_km} km away.` : '';
+
+function txRow(p, x) {
+  const desc = x.description || x.mode || 'Transmitter';
+  const mode = [x.mode, x.baud ? `${x.baud} bd` : null].filter(Boolean).join(' ');
+  const up = x.uplink_low ? `${range(x.uplink_low, x.uplink_high)}${x.uplink_mode ? ' ' + x.uplink_mode : ''}${x.invert ? ' (inverting)' : ''}` : '—';
+  let cell;
+  if (x.rig) {
+    const label = `${mhz(x.rig.freq_hz)} MHz ${x.rig.mode}`;
+    cell = el('button', { type: 'button', class: 'tune', 'aria-label': `Tune the iRadio to ${p.display}, ${desc}, ${label}` }, `Tune ${label}`);
+    cell.addEventListener('click', () => run(cell, '/api/tune', { freq_hz: x.rig.freq_hz, mode: x.rig.mode, sat_id: p.sat_id }, r => tuned(r, `${p.display} ${desc}`)));
+  } else cell = 'out of range';
+  return el('tr', {}, el('th', { scope: 'row' }, desc),
+    el('td', { class: 'num', 'data-label': 'Downlink' }, range(x.downlink_low, x.downlink_high)),
+    el('td', { class: 'num', 'data-label': 'Uplink' }, up),
+    el('td', { 'data-label': 'Mode' }, mode || '—'),
+    el('td', { 'data-label': 'iRadio' }, cell));
+}
+
+function buildPass(p) {
+  const id = `h-${key(p)}`;
+  const heard = p.heard != null ? `Heard ${p.heard} time${p.heard === 1 ? '' : 's'} in the last 24 h${p.heard_modes.length ? ' (' + p.heard_modes.join(', ') + ')' : ''}` : '';
+  const age = p.tle_age_days > 3 ? el('span', { class: 'warn' }, `orbit data ${p.tle_age_days} days old`) : `orbit data ${p.tle_source}, ${p.tle_age_days} days old`;
+  const other = p.name !== p.display ? ` · SatNOGS name ${p.name}` : '';
+  return el('article', { class: 'pass', 'aria-labelledby': id, 'data-key': key(p) },
+    el('h3', { id }, el('span', { class: 'name' }, p.display), ', ', el('span', { class: 'when' }, whenText(p))),
+    el('p', { class: 'geo' }, geoText(p), ' ', el('span', { class: 'nowpos' }, nowText(p))),
+    el('p', { class: 'meta' }, [heard, `NORAD ${p.norad}`].filter(Boolean).join(' · ') + other + ' · ', age),
+    p.transmitters.length ? el('div', { class: 'tablewrap' }, el('table', {},
+      el('caption', { class: 'vh' }, `${p.display} transmitters`),
+      el('thead', {}, el('tr', {}, ...['Transmitter', 'Downlink', 'Uplink', 'Mode', 'iRadio'].map(h => el('th', { scope: 'col' }, h)))),
+      el('tbody', {}, ...p.transmitters.map(x => txRow(p, x))))) : el('p', { class: 'meta' }, 'SatNOGS lists no active transmitters for this satellite.'));
+}
+
+function render() {
+  const list = filtered();
+  const box = $('#passes');
+  const existing = new Map([...box.children].map(c => [c.dataset.key, c]));
+  const keep = new Set(list.map(key));
+  for (const [k, node] of existing) if (!keep.has(k)) node.remove();
+  let prev = null;
+  for (const p of list) {
+    let node = existing.get(key(p));
+    if (!node || !node.isConnected) node = buildPass(p);
+    else {
+      node.querySelector('.when').textContent = whenText(p);
+      node.querySelector('.nowpos').textContent = nowText(p);
+    }
+    node.classList.toggle('up', isUp(p));
+    const want = prev ? prev.nextSibling : box.firstChild;
+    if (node !== want) box.insertBefore(node, want);
+    prev = node;
+  }
+  const up = list.filter(isUp).length;
+  const win = $('#window').value === '60' ? 'the next hour' : 'the next 24 hours';
+  $('#summary').textContent = list.length
+    ? `${list.length} pass${list.length === 1 ? '' : 'es'}: ${up} in view now, ${list.length - up} in ${win}. Times are ${TZ} time.`
+    : `No passes now or in ${win}.`;
+  drawSky(list);
+}
+
+function xy(az, elv) { const r = 120 * (90 - elv) / 90, a = az * Math.PI / 180; return [r * Math.sin(a), -r * Math.cos(a)]; }
+function drawSky(list) {
+  const svg = $('#sky'); const ns = 'http://www.w3.org/2000/svg';
+  const css = getComputedStyle(document.documentElement);
+  const c = n => css.getPropertyValue(n).trim();
+  svg.textContent = '';
+  const add = (tag, a) => { const e = document.createElementNS(ns, tag); for (const k in a) e.setAttribute(k, a[k]); svg.append(e); return e; };
+  for (const r of [120, 80, 40]) add('circle', { cx: 0, cy: 0, r, fill: 'none', stroke: c('--line'), 'stroke-width': 1 });
+  add('line', { x1: -120, y1: 0, x2: 120, y2: 0, stroke: c('--line') }); add('line', { x1: 0, y1: -120, x2: 0, y2: 120, stroke: c('--line') });
+  for (const [s, x, y] of [['N', 0, -123], ['E', 125, 4], ['S', 0, 130], ['W', -125, 4]])
+    add('text', { x, y, fill: c('--muted'), 'font-size': 10, 'text-anchor': 'middle' }).textContent = s;
+  for (const p of list.slice(0, 15)) {
+    const up = isUp(p);
+    const pts = p.track.filter(q => q[1] > 0).map(q => xy(q[0], q[1]).map(v => v.toFixed(1)).join(',')).join(' ');
+    if (pts) add('polyline', { points: pts, fill: 'none', stroke: up ? c('--track') : c('--track2'), 'stroke-width': up ? 2.5 : 1.2, 'stroke-dasharray': up ? '' : '4 3' });
+    const pos = up && p.now ? xy(p.now.az, p.now.el) : (p.track.length ? xy(p.track[0][0], 0) : null);
+    if (!pos) continue;
+    if (up && p.now) add('circle', { cx: pos[0], cy: pos[1], r: 4, fill: c('--now') });
+    add('text', { x: pos[0] + 6, y: pos[1] - 4, fill: up ? c('--fg') : c('--muted'), 'font-size': up ? 10 : 8 }).textContent = p.display;
+  }
+}
+
+async function loadPasses() {
+  try {
+    const d = await api('/api/passes');
+    offset = d.now - Date.now();
+    data = d;
+    if (d.site && d.site.tz && d.site.tz !== TZ) {
+      TZ = d.site.tz;
+      hm = new Intl.DateTimeFormat('en-GB', { timeZone: TZ, hour: '2-digit', minute: '2-digit' });
+    }
+    if (d.site) { $('#site').textContent = d.site.name; document.title = `Satellite tracker: ${d.site.name}`; }
+    const notes = [];
+    if (d.error) notes.push(`Problem: ${d.error}`);
+    for (const [k, v] of Object.entries(d.fetch_errors || {})) notes.push(`${k} not refreshed (${v})`);
+    if (d.unmatched && d.unmatched.length) notes.push(`Heard but no orbit data found: ${d.unmatched.join(', ')}`);
+    notes.push(`${d.heard_count} satellites heard in the last 24 h. Passes worked out ${d.computed ? t(d.computed) : '…'} (${TZ}).`);
+    $('#data-status').textContent = notes.join(' · ');
+    render();
+  } catch (e) { $('#summary').textContent = 'The page server is not answering.'; }
+}
+
+$('#window').addEventListener('change', render);
+$('#tunable').addEventListener('change', render);
+loadPasses(); pollRadio();
+setInterval(loadPasses, 30000);
+setInterval(pollRadio, 1500);
+setInterval(render, 15000);
+</script>
+</body>
+</html>
