@@ -5,7 +5,7 @@ A small web page that lists the amateur satellites passing over you and tunes th
 - **Which satellites:** those reported heard in the last 24 hours on AMSAT's live status page (status.amsat.org).
 - **Passes:** worked out for your location, for the next hour or the next 24 hours, with a sky plot.
 - **Downlinks:** from SatNOGS DB, with the uplinks and modes shown alongside.
-- **Tuning:** one Tune button per downlink frequency and mode the radio can receive (transmitters sharing them are listed together). Clicking it sets the frequency and mode, corrected for Doppler at that moment. FM voice and AFSK packet use NFM; FSK, GFSK and GMSK data (9600 bd) use wide FM, for a decoder on the radio's audio output; AM uses AM; SSB, CW and BPSK use USB.
+- **Tuning:** one Tune button per downlink frequency and mode the radio can receive (transmitters sharing them are listed together). Clicking it sets the frequency and mode, corrected for Doppler at that moment. FM voice, AFSK packet and SSTV use NFM; FSK, GFSK and GMSK data (9600 bd) use wide FM, for a decoder on the radio's audio output; AM uses AM; SSB, CW and BPSK use USB.
 - **Squelch:** with "Open the squelch during the pass" ticked, a Tune click opens the squelch when the pass starts (at once if it already has) and puts it back when the satellite sets or you stop following. A Tune click before the pass waits for it.
 - **Signal:** a meter on the page shows the radio's signal strength, read over the cable twice a second.
 - **Minimum elevation:** passes that never get higher than the chosen elevation (15° by default, `min_elevation` in `config.json`) are hidden.

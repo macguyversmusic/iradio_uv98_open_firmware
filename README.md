@@ -4,107 +4,65 @@ I got sick of people selling simple knowledge or "personalised" firmware.  open 
 
 Open firmware for the iRadio UV-98 Plus handheld (Radtel RT-880G family, FCC ID 2AZSA-6D880), written from scratch, plus the tools to flash it and control the radio from a computer over the programming cable, and a satellite tracker that tunes the radio to downlinks.
 
-**Status: experimental (test 38), run on one UV-98 Plus only.** The firmware reads the radio's own calibration (frequency correction, deviation, power levels) from its SPI flash, with our radio's values built into `firmware/src/main.c` as a fallback.
+**Status: experimental (test 39), run on one UV-98 Plus only.** The firmware reads the radio's own calibration (frequency correction, deviation, power levels) from its SPI flash, with our radio's values built into `firmware/src/main.c` as a fallback.
 
 ## Features
-
-Each feature says whether it has been tested on the radio, and with which test build. "Not tested yet" means no test on the radio has been recorded. Test 38 is on our radio now.
 
 ### Receiving
 
 - **Receive 18-660 MHz and 840-1300 MHz in FM, NFM, AM and USB.** Type the frequency in kHz and press `#` (for example `145500#`); the red bar clears a half-typed frequency. Up/down step by the menu step and repeat when held. Change the mode in menu RX/TX, Mode. Over the cable: `F 145.5`, `M USB`.
-  *Tested at 446 MHz with a UV-5R: FM and NFM (tests 6-7), USB (test 11). Not tested yet: AM, and the other bands.*
 - **Band presets:** 10 m, 6 m, AIR, 2 m, MARINE, 220, 70 cm and 23 cm. Each sets its usual mode, step and repeater offset (Region 2), turns the shift off, and comes back to the last frequency you used in that band. Menu RX/TX, Band.
-  *Tested (test 28): from the menu, 70 cm to 23 cm (1297.500 NFM, shift off, offset 12 MHz).*
-- **Squelch:** silences the speaker until a signal opens it. Levels 0 (always open) to 9, default 3. Menu RX/TX, Squelch, or `SQ 0-9`. Hold PTT2 or the monitor side key to open it by hand. In FM and NFM it works as stock does (since test 23): the radio chip's own squelch, with signal, noise and glitch thresholds from the radio's calibration for the band, so a channel opens only when a signal rises on it. AM and USB open on signal strength.
-  *Tested: noise squelch (test 7); the stock-style squelch kept a neighbouring channel shut at a realistic signal level (tests 23-26).*
+- **Squelch:** silences the speaker until a signal opens it. Levels 0 (always open) to 9, default 3. Menu RX/TX, Squelch, or `SQ 0-9`. Hold PTT2 or the monitor side key to open it by hand. In FM and NFM it works as stock does: the radio chip's own squelch, with signal, noise and glitch thresholds from the radio's calibration for the band, so a channel opens only when a signal rises on it. AM and USB open on signal strength.
 - **Receive tone squelch (CTCSS and DCS):** the speaker opens only for a signal carrying the tone you set: CTCSS, DCS normal or DCS inverted. Menu RX/TX, RX tone; in a tone item, `#` jumps to the next tone type. Over the cable: `RT 88.5`, `RT D023N`, `RT D023I`, `RT OFF`.
-  *Tested (test 11).*
 - **Signal meter:** a CB-style S-meter at the bottom of the screen, IARU scale (S9 = -93 dBm above 30 MHz, -73 dBm below; 6 dB per S-unit). Over the cable: `RSSI`.
-  *Tested (test 28, 446 MHz, UV-5R at 1 W): weak signals follow the real level (6 dB per doubling of distance), and with no antenna the floor reads -121 dBm, close to the thermal floor of about -125 dBm. Strong signals, above about -45 dBm, read low (compressed). Indoors with the antenna on, local noise can hold the floor near S9.*
 - **LED colours:** green when receiving, yellow when a signal is held back by the tone squelch, red when transmitting.
-  *Tested (tests 12-13).*
 - **Automatic gain control for USB and AM:** turns the receiver gain down on strong signals and back up when they go. On by default. Menu Audio, AGC, or `AGC ON` / `AGC OFF`.
-  *Not tested yet on a real SSB signal.*
 - **Dual watch:** as stock's multi standby, the main receiver takes A and B in turn (250 ms each; the chip's squelch decides, 7 open readings in a row). Whichever opens is heard until it closes, then the turns resume after 2 seconds; no priority cut-ins. A key, PTT or a serial command that changes something returns to the active VFO at once. Works on every band. On at start-up; menu Settings, Dual watch, or `DW ON` / `DW OFF`. (The second radio chip is not used for receiving: stock only transmits with it.)
-  *Tested: 2 m with the earlier second-chip dual watch (test 22); the turn-taking switched to a UV-5R on 446.00625 and back over the cable (test 31). Not yet confirmed by ear on test 38.*
 - **Band scan:** in VFO mode, steps through the current band preset by the menu step, 200 ms per step as stock. A signal counts after 7 open squelch readings in a row; the scan then checks the steps up to 100 kHz either side and settles on the strongest, so a strong transmitter close by doesn't stop it on a neighbouring step. It carries on 2 seconds after the signal goes. Up and down during a scan set its direction; any other key or PTT stops it. Menu Scan, Scan, or `SCAN ON` (up) / `SCAN DOWN`.
-  *Tested: starts and stops (test 21); stopped on 145.500 for a UV-5R at 1 W, scanning up from 145.400 and 145.450 (tests 26-27) and down from 145.550 (test 27).*
 - **Channel scan:** in channel mode, Scan steps through the used channels instead, skipping channels marked "scan remove" in CHIRP, each with its own receive tone. It stops on a signal (7 open squelch readings in a row), then checks your channels within 100 kHz of that one and settles on the strongest, so a strong transmitter close by doesn't stop it on a neighbouring channel. It carries on 2 seconds after the signal goes. Up and down during a scan set its direction; any other key or PTT stops it. Menu Scan, Scan, or `SCAN ON` / `SCAN DOWN`.
-  *Tested: starts, steps and stops over the cable (test 21); stopped on ch 17 (145.500) for a UV-5R at 1 W (test 28; test 27 without the check stopped on ch 16, 145.420).*
-- **Frequency detect:** finds the frequency of a nearby transmitter. Start it, then key the other radio close by. The radio tunes to what it finds, to the nearest 1 kHz, or shows NOTHING FOUND after 20 seconds. Menu Scan, Freq detect, or `FDET`. Any key stops it.
-  *Known problem: it reports a frequency within a second of starting, with nothing transmitting (143.605 and 256.274 MHz in tests 21-23).*
+- **Frequency detect:** finds the frequency of a nearby transmitter. Start it, then key the other radio close by. The radio tunes to what it finds, to the nearest 1 kHz, or shows NOTHING FOUND after 20 seconds. Menu Scan, Freq detect, or `FDET`. Any key stops it. See [Known problems](#known-problems).
 
 ### Transmitting
 
 - **Transmit as stock:** PTT1 transmits anywhere in the radio's specified transmit ranges, 18-64 MHz and 136-520 MHz, at the power chosen. Everything else is receive only, including the air band, 4 m, 33 cm and 23 cm. See [Transmit limits](#transmit-limits).
-  *Tested: 2 m and 70 cm, heard on a UV-5R (tests 8-11, 22-23). Not yet tested: other frequencies.*
 - **Marine VHF, MID power at most:** 156.000-162.025 MHz.
-  *Not tested yet.*
 - **CB, MID power at most:** 26.965-27.405 MHz (the 40 channels), narrow FM.
-  *Not tested yet.*
 - **PMR446, LOW power only:** 446.0-446.2 MHz.
-  *Transmit on 446.00625 was tested at LOW in tests 8-11; the LOW-only limit is new in test 22.*
 - **Power LOW, MID, HIGH:** each level comes from the radio's own calibration, with the band's amplifier on, as stock does. Default MID (when no settings are saved). CB and marine are limited to MID, PMR446 to LOW. Menu RX/TX, Power, or `POW MID`. In channel mode each channel uses its own power, within the same limits.
-  *Partly tested: the battery voltage drops more at each level (test 11). The output in watts has not been measured.*
 - **Transmit tone (CTCSS and DCS):** menu RX/TX, TX tone, with `#` jumping to the next tone type. Over the cable: `T 88.5`, `T D023N`, `T D023I`, `T OFF`.
-  *Tested: each decoded by a UV-5R (test 11).*
 - **1750 Hz tone burst:** hold the alarm button on top of the radio. Pressed while PTT1 is held, it replaces your voice until you let go.
-  *Tested (tests 10-11).*
 - **Repeater shift and offset:** menu RX/TX, Shift (off, + or -) and Offset (100 kHz, 500 kHz, 600 kHz, 1, 1.6, 5, 6, 7.6 or 12 MHz), or `SHIFT -` and `OFFSET 0.6`.
-  *Tested (test 23): receive 446.10625, shift -, offset 100 kHz: the chip's transmit frequency read 446.00625 and a UV-5R heard it.*
 - **Reverse:** with a shift set, holding `#` for 1.5 seconds listens on the repeater input; hold it again to swap back. On a split channel it swaps receive and transmit.
-  *Tested (test 23): holding `#` moved to 446.00625 and heard a UV-5R there; holding it again went back.*
 - **Mic gain:** 0-31, default 25. Menu Audio, Mic gain, or `MIC 25`; over the cable it also works while transmitting.
-  *Tested at 25 (test 11); 18 against 25 compared on a UV-5R (test 23).*
 - **Time-out timer:** stops transmitting after 15 seconds to 10 minutes, default 60 seconds; transmit then stays locked out until you release the key. Menu RX/TX, Time-out.
-  *Tested (test 11).*
-- **Transmit cut-off at switch-off:** if the supply drops while transmitting, for example when you switch off with PTT held, the firmware stops transmitting at once.
-  *Tested (test 23): switched off with PTT held, then a bootloader power-on: a UV-5R heard nothing. Still, don't switch on or off while transmitting.*
+- **Transmit cut-off at switch-off:** if the supply drops while transmitting, for example when you switch off with PTT held, the firmware stops transmitting at once. Still, don't switch on or off while transmitting.
 
 ### On the radio
 
-- **VFO A and VFO B:** two VFOs, each with its own frequency, mode, step, shift, offset and tones. A is always the top row and B the bottom row, laid out the same: a big frequency, then a line with A or B, the power (L / M / H), the mode, the tone if one is on (CT 88.5 receive, T 88.5 transmit only, D023N DCS) and + / - for a shift. The active one (the one that transmits) is white, the other 60% white, and the one being received green. A short press of `*` changes which one is active; nothing moves. Over the cable: `VFO A` / `VFO B`.
-  *Tested: switching over the cable (test 15), the `*` key by you (test 21). The rows as described: test 38.*
+- **VFO A and VFO B:** two VFOs, each with its own frequency, mode, step, shift, offset and tones. A is always the top row and B the bottom row, laid out the same: a big frequency, then a line with A or B, the power (L / M / H), the mode, the tone if one is on (CT 88.5 receive, T 88.5 transmit only, D023N DCS) and + / - for a shift. The active one (the one that transmits) is white, the other 60% white. A short press of `*` changes which one is active; nothing moves. Over the cable: `VFO A` / `VFO B`.
 - **Menu in groups:** see [Using the radio](#using-the-radio).
-  *Tested (test 28): Band and Power changed from the menu.*
 - **Tuning step:** 0.1, 1, 2.5, 5, 6.25, 10, 12.5, 25, 50 or 100 kHz. Typing a frequency (or `F` over the cable) sets the band's step: 1 kHz on 10 m and 6 m, 10 kHz on CB, 100 kHz on FM broadcast, 25 kHz on the air band, marine VHF and 23 cm, 12.5 kHz elsewhere; a band preset sets its own. Menu RX/TX, Step, to change it.
-  *Not tested yet (band steps new in test 38).*
 - **Backlight:** five brightness levels. Menu Settings, Backlight.
-  *Not tested yet.*
 - **Backlight timeout:** turns the screen and keypad light off after 10, 20, 30 or 60 seconds without use, or never (the default). The first key press only wakes the screen. Menu Settings, Light off.
-  *Not tested yet.*
 - **Key lock:** hold `*` (the key with the lock symbol) for 1.5 seconds to lock or unlock the keys. PTT still works while locked.
-  *Tested by you (test 21).*
 - **Low battery warning:** shows LOW BATTERY when the battery drops to 6.8 V.
-  *Not tested yet.*
 - **Boot splash and screen:** M0FCC inverted in the middle, then "iRadio UV98+" and "Open Firmware v1.0". High-contrast screen with smooth fonts. The screen style can be changed over the cable with `FONT 1|2`, `EDGE 0-3` and `PAL 1|2`.
-  *Tested (tests 12-13).*
 - **Saved settings:** both VFOs and which one is selected, power, mic gain, squelch, time-out, backlight, light timeout, band memories, channel mode and channel, and screen style are saved in a spare sector of the radio's SPI flash (0xFC000) 3 seconds after a change, and loaded at switch-on. `SAVE` saves at once; `SETTINGS` shows whether settings were loaded at start-up.
-  *Tested over the cable: test 18 loaded what test 17 saved.*
 - **Calibration from the radio itself:** frequency correction, deviation and power levels are read from the radio's own calibration in its SPI flash, with built-in values as a fallback. `CAL` shows which were used.
-  *Tested over the cable (test 16), on one radio.*
 
 ### Channels
 
 - **Channel mode:** both A and B on channels (each keeps its own channel; `*` changes which is active), using the channels already in the radio, as programmed by the stock software or CHIRP: frequency, split, mode, tones, power and name. A short press of `#` (the V/M key), or menu Memory, VFO / CH, switches between VFO and channel mode; menu Memory, Channel steps through the used channels. Up/down step through the used channels; type a channel number and `#` to jump to it. Over the cable: `CH 17`, `CHLIST`, `VFOMODE`.
   Channels marked "Only Rx" in CHIRP never transmit.
-  *Tested: `CHLIST` (test 18); V/M on `#` (tests 21-22); up / down and a number + `#` (test 28).*
-- **Programming with CHIRP or the stock CPS:** the firmware answers the stock programming protocol, so CHIRP (model Radtel RT-880G) and iRadio's CPS can read and write the channels. After a write, the radio restarts.
-  *CHIRP tested (test 28): an upload of all channels, then a download that matched it byte for byte. The stock CPS is not tested.*
+- **Programming with CHIRP:** the firmware answers the stock programming protocol, so CHIRP (model Radtel RT-880G) can read and write the channels. iRadio's CPS uses the same protocol but has not been tried. After a write, the radio restarts.
 
 ### From a computer
 
 - **Serial control:** the settings above can be read and set over the programming cable at 115200 baud. `HELP` lists the commands; see [Serial commands](#serial-commands).
-  *Tested (tests 15-18).*
 - **Transmit from the computer:** `PTT ON` keys the radio and `PTT OFF` unkeys it. `PTT ON` must be repeated at least every 2 seconds, or transmit stops by itself. Band limits, power and the time-out timer still apply.
-  *Tested (test 15).*
 - **Hamlib rig control:** see [Rig control](#rig-control-hamlib).
-  *Tested (test 15).*
 - **Satellite tracker:** see [Satellite tracker](#satellite-tracker).
-  *Partly tested: tuning and Doppler follow on five passes (nothing heard, radio indoors). Not tested yet: Auto.*
 - **Register access for experiments:** `R1 xx` / `R2 xx` read a register on radio chip 1 or 2; `W1 reg value` writes one on chip 1 (transmit registers are refused). `SPIID` and `SPIRD` read the flash chip.
-  *Tested (test 16).*
 
 **Not included:** LSB, and the LW, MW, SW and FM broadcast reception listed in the radio's specification.
 
@@ -154,7 +112,7 @@ Log out and in again once.
 
 ### 1. Back up the radio first (stock firmware)
 
-Make this backup while the stock firmware is still on the radio. (Test 17 and later answer the same read command, but a backup taken before changing firmware is the one to keep.) Switch the radio on normally with the cable connected:
+Make this backup while the stock firmware is still on the radio. (The open firmware answers the same read command, but a backup taken before changing firmware is the one to keep.) Switch the radio on normally with the cable connected:
 
 ```sh
 .venv/bin/python tools/backup_spi.py my_uv98_spiflash.bin
@@ -180,7 +138,7 @@ Switch the radio on normally, then off **without pressing PTT** (see [Known prob
 
 ```sh
 .venv/bin/python tools/flash.py probe --model uv98                 # optional: connect only, erases nothing
-.venv/bin/python tools/flash.py flash --model uv98 --image bin/uv98plus_openfw_test38.bin --yes
+.venv/bin/python tools/flash.py flash --model uv98 --image bin/uv98plus_openfw_test39.bin --yes
 ```
 
 It takes about 30 seconds: 246 blocks of 1 KB, each acknowledged. When it prints `final reply 6`, switch the radio off and on normally. To go back to stock, flash `uv98plus_V1.16_250915.bin` the same way.
@@ -275,8 +233,8 @@ Check your local rules before transmitting.
 
 ## Known problems
 
-- **Switching off while transmitting.** Without protection, the radio chip keeps its transmit settings through a switch-off, and the next power-on into bootloader mode transmits until switched off (the stock firmware has the same gap). Test 16 and later stop transmitting when the supply voltage drops; in test 23 a switch-off with PTT held, then a bootloader power-on, gave nothing on a UV-5R. **Don't switch on or off while transmitting.**
-- **Dual watch on 70 cm.** The second receiver heard nothing from a UV-5R on 446 MHz (test 22), where the main receiver read it at -44 dBm; on 2 m it works. Its receive path is set the same on every frequency.
+- **Switching off while transmitting.** Without protection, the radio chip keeps its transmit settings through a switch-off, and the next power-on into bootloader mode transmits until switched off (the stock firmware has the same gap). This firmware stops transmitting when the supply voltage drops. **Don't switch on or off while transmitting.**
+- **Frequency detect** can report a frequency within a second of starting, with nothing transmitting.
 - **Signal meter on strong signals.** Above about -45 dBm the reading compresses and reads low (a transmitter right next to the radio).
 
 ## Building from source
