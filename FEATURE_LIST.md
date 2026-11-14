@@ -1,6 +1,6 @@
 # Feature list
 
-What the open firmware (test 17) does, and how to use each feature. Unless a feature says otherwise, it has been tested on the radio.
+What the open firmware (test 18) does, and how to use each feature. Unless a feature says otherwise, it has been tested on the radio.
 
 ## Receiving
 
@@ -10,19 +10,19 @@ What the open firmware (test 17) does, and how to use each feature. Unless a fea
 
 - **Modes: FM, NFM, AM, USB**
 
-  Wide FM, narrow FM, AM for the air band, and USB for SSB and CW. Change it with menu item 9 (Mode) or the `M` command, for example `M USB`.
+  Wide FM, narrow FM, AM for the air band, and USB for SSB and CW. Change it in menu RX/TX, Mode, or with the `M` command, for example `M USB`.
 
 - **Band presets**
 
-  10 m, 6 m, AIR, 2 m, MARINE, 220, 70 cm and 23 cm. Each one sets its usual mode, step and repeater offset, turns the shift off, and comes back to the last frequency you used in that band. Menu item 1 (Band).
+  10 m, 6 m, AIR, 2 m, MARINE, 220, 70 cm and 23 cm. Each one sets its usual mode, step and repeater offset, turns the shift off, and comes back to the last frequency you used in that band. Menu RX/TX, Band.
 
 - **Noise squelch**
 
-  Silences the speaker until a signal opens it. Levels run from 0 (always open) to 9, default 3. Menu item 7 (Squelch) or `SQ 0-9`. Hold PTT2 or the monitor side key to open it by hand.
+  Silences the speaker until a signal opens it. Levels run from 0 (always open) to 9, default 3. Menu RX/TX, Squelch, or `SQ 0-9`. Hold PTT2 or the monitor side key to open it by hand.
 
 - **Receive tone squelch (CTCSS and DCS)**
 
-  The speaker opens only for a signal carrying the tone you set: CTCSS, DCS normal or DCS inverted. Menu item 4 (RX tone). In a tone item, `#` jumps to the next tone type. Over the cable: `RT 88.5`, `RT D023N`, `RT D023I` or `RT OFF`.
+  The speaker opens only for a signal carrying the tone you set: CTCSS, DCS normal or DCS inverted. Menu RX/TX, RX tone. In a tone item, `#` jumps to the next tone type. Over the cable: `RT 88.5`, `RT D023N`, `RT D023I` or `RT OFF`.
 
 - **Signal meter**
 
@@ -34,23 +34,23 @@ What the open firmware (test 17) does, and how to use each feature. Unless a fea
 
 - **Automatic gain control for USB and AM**
 
-  Turns the receiver gain down on strong signals so they don't distort, and back up when they go. It is on by default. `AGC ON` / `AGC OFF`. Not yet tested on a real SSB signal.
+  Turns the receiver gain down on strong signals so they don't distort, and back up when they go. It is on by default. Menu Audio, AGC, or `AGC ON` / `AGC OFF`. Not yet tested on a real SSB signal.
 
 - **Dual watch**
 
-  The radio's second receiver chip listens on the other VFO. When it hears a signal while the main receiver is quiet, the radio switches to that VFO so you hear it, and switches back 2 seconds after the signal ends. Menu item "Dual watch" (reach it with up/down), or `DW ON` / `DW OFF`. It is off in channel mode. Not yet tested on the radio.
+  The radio's second receiver chip listens on the other VFO, shown on the small line above the meter. When it hears a signal while the main receiver is quiet, the main receiver listens there too so you hear it, and the line turns green; the top of the screen and transmit stay on the main VFO or channel. It comes back 2 seconds after the signal ends, or at once on any key or PTT. On at start-up, also in channel mode. Menu Settings, Dual watch, or `DW ON` / `DW OFF`. Not yet tested with a signal on the other VFO.
 
 - **Band scan**
 
-  Steps through the current band preset by the menu step. It stops on a signal and carries on 3 seconds after the signal goes. Menu item "Scan", then the green bar to start, or `SCAN ON`. Any key stops it. Not yet tested on the radio.
+  Steps through the current band preset by the menu step. It stops on a signal and carries on 3 seconds after the signal goes. Menu Scan, Scan, or `SCAN ON`. Any key stops it. Not yet tested on the radio.
 
 - **Spectrum view**
 
-  Shows the signal strength at 44 points around the current frequency, spaced by the menu step, as bars on the screen. Menu item "Spectrum", then the green bar. Any key stops it. Over the cable, `SPEC` prints one sweep as 44 dBm values. Not yet tested on the radio.
+  Shows the signal strength at 44 points around the current frequency, spaced by the menu step, as bars rising from the noise floor. Menu Scan, Spectrum. Any key stops it. Over the cable, `SPEC` prints one sweep as 44 dBm values. Fixed in test 18 (test 16 and 17 read each point too soon); not yet seen on the radio.
 
 - **Frequency detect**
 
-  Finds the frequency of a nearby transmitter. Start it, then key the other radio close by. The radio tunes to what it finds, to the nearest 1 kHz, or shows NOTHING FOUND after 20 seconds. Menu item "Freq detect", then the green bar, or `FDET`. Any key stops it. Not yet tested on the radio.
+  Finds the frequency of a nearby transmitter. Start it, then key the other radio close by. The radio tunes to what it finds, to the nearest 1 kHz, or shows NOTHING FOUND after 20 seconds. Menu Scan, Freq detect, or `FDET`. Any key stops it. Not yet tested on the radio.
 
 ## Transmitting
 
@@ -64,11 +64,11 @@ What the open firmware (test 17) does, and how to use each feature. Unless a fea
 
 - **Power: MIN, LOW, MID, HIGH**
 
-  Each level comes from the radio's own calibration. MIN uses the radio chip alone; LOW, MID and HIGH switch the band's amplifier on, as stock does. The default is MIN. Menu item 2 (Power) or `POW LOW`. The real output in watts has not been measured.
+  Each level comes from the radio's own calibration. MIN uses the radio chip alone; LOW, MID and HIGH switch the band's amplifier on, as stock does. The default is MIN. Menu RX/TX, Power, or `POW LOW`. In channel mode each channel uses its own power. The real output in watts has not been measured.
 
 - **Transmit tone (CTCSS and DCS)**
 
-  Sends a CTCSS tone or a DCS code with your voice, to open repeaters and tone-squelched radios. Menu item 3 (TX tone), with `#` jumping to the next tone type. Over the cable: `T 88.5`, `T D023N`, `T D023I` or `T OFF`.
+  Sends a CTCSS tone or a DCS code with your voice, to open repeaters and tone-squelched radios. Menu RX/TX, TX tone, with `#` jumping to the next tone type. Over the cable: `T 88.5`, `T D023N`, `T D023I` or `T OFF`.
 
 - **1750 Hz tone burst**
 
@@ -76,7 +76,7 @@ What the open firmware (test 17) does, and how to use each feature. Unless a fea
 
 - **Repeater shift and offset**
 
-  Transmits above or below the receive frequency. Menu items 5 (Shift: off, + or -) and 6 (Offset: 100 kHz to 12 MHz), or `SHIFT -` and `OFFSET 0.6`.
+  Transmits above or below the receive frequency. Menu RX/TX, Shift (off, + or -) and Offset (100 kHz to 12 MHz), or `SHIFT -` and `OFFSET 0.6`.
 
 - **Reverse**
 
@@ -84,11 +84,11 @@ What the open firmware (test 17) does, and how to use each feature. Unless a fea
 
 - **Mic gain**
 
-  Sets the microphone level, 0-31, default 25. Menu item 0 (Mic gain) or `MIC 25`. Over the cable it also works while transmitting.
+  Sets the microphone level, 0-31, default 25. Menu Audio, Mic gain, or `MIC 25`. Over the cable it also works while transmitting.
 
 - **Time-out timer**
 
-  Stops transmitting after a set time, 15 seconds to 10 minutes, default 60 seconds. After that, transmit stays locked out until you release the key. Menu item `*` (Time-out).
+  Stops transmitting after a set time, 15 seconds to 10 minutes, default 60 seconds. After that, transmit stays locked out until you release the key. Menu RX/TX, Time-out.
 
 - **Transmit cut-off at switch-off**
 
@@ -98,23 +98,23 @@ What the open firmware (test 17) does, and how to use each feature. Unless a fea
 
 - **VFO A and VFO B**
 
-  Two independent VFOs, each with its own frequency, mode, step, shift, offset and tones. `*` swaps between them.
+  Two independent VFOs, each with its own frequency, mode, step, shift, offset and tones. The main one is at the top; the other is on a small line above the meter, receive only. `*` swaps them.
 
-- **Menu with number shortcuts**
+- **Menu in groups**
 
-  The green bar opens the menu. Up/down picks an item; the green bar edits it, and up/down then change the value, which takes effect at once. The green bar keeps a change and the red bar undoes it, or leaves the menu. Keys 1-9, 0, `*` and `#` jump straight to items 1-12. The last five items (Light off, Dual watch, Scan, Spectrum, Freq detect) are reached with up/down.
+  The green bar opens the menu at its five groups: 1 RX/TX, 2 Audio, 3 Memory, 4 Scan, 5 Settings. Up/down picks a row; the green bar or the row's number key opens a group, starts an action or edits a value. While editing, up/down change the value at once; the green bar keeps it and the red bar undoes it. The red bar goes back a level, and leaves the menu from the top. Not yet seen on the radio.
 
 - **Tuning step**
 
-  0.1, 1, 2.5, 5, 6.25, 10, 12.5, 25, 50 or 100 kHz. Menu item 8 (Step).
+  0.1, 1, 2.5, 5, 6.25, 10, 12.5, 25, 50 or 100 kHz. Menu RX/TX, Step.
 
 - **Backlight level**
 
-  Five brightness levels. Menu item `#` (Backlight).
+  Five brightness levels. Menu Settings, Backlight.
 
 - **Backlight timeout**
 
-  Turns the screen and keypad light off after 10, 20, 30 or 60 seconds without use, or never. The first key press only wakes the screen. Menu item "Light off".
+  Turns the screen and keypad light off after 10, 20, 30 or 60 seconds without use, or never. The first key press only wakes the screen. Menu Settings, Light off.
 
 - **Key lock**
 
@@ -140,7 +140,7 @@ What the open firmware (test 17) does, and how to use each feature. Unless a fea
 
 - **Channel mode**
 
-  Uses the channels already in the radio, as programmed by the stock software or CHIRP: frequency, split, mode, tones and name. The channel's power setting is not used; the menu power applies. The red bar (with nothing typed) switches between VFO and channel mode. Up/down step through the used channels. Type a channel number and `#` to jump to it. On a split channel, `#` swaps receive and transmit. Over the cable: `CH 17`, `CHLIST` and `VFOMODE`. Not yet tested on the radio.
+  Uses the channels already in the radio, as programmed by the stock software or CHIRP: frequency, split, mode, tones, power and name. The red bar (with nothing typed), or menu Memory, VFO / CH, switches between VFO and channel mode; menu Memory, Channel steps through the channels. Up/down step through the used channels. Type a channel number and `#` to jump to it. On a split channel, `#` swaps receive and transmit. Over the cable: `CH 17`, `CHLIST` and `VFOMODE`. Not yet tested on the radio.
 
 - **Programming with CHIRP or the stock CPS**
 

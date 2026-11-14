@@ -35,7 +35,7 @@ For each satellite it uses the newest set. To use your own keps as well, put the
 | File | What it is |
 |---|---|
 | `server.py` | Web server: downloads, pass prediction, Doppler, radio control |
-| `uv98.py` | Serial control of the radio (PING, F, M, RSSI, VOL) |
+| `uv98.py` | Serial control of the radio (PING, F, M, RSSI, VOL, PTT, VFO), shared with `tools/rigctld.py` |
 | `index.html` | The page |
 | `config.json` | Your location, time zone, web port and serial port |
 | `requirements.txt` | Python packages |
