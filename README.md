@@ -20,8 +20,8 @@ Each feature says whether it has been tested on the radio, and with which test b
   *Tested: noise squelch (test 7); the stock-style squelch kept a neighbouring channel shut at a realistic signal level (tests 23-26).*
 - **Receive tone squelch (CTCSS and DCS):** the speaker opens only for a signal carrying the tone you set: CTCSS, DCS normal or DCS inverted. Menu RX/TX, RX tone; in a tone item, `#` jumps to the next tone type. Over the cable: `RT 88.5`, `RT D023N`, `RT D023I`, `RT OFF`.
   *Tested (test 11).*
-- **Signal meter:** a CB-style S-meter at the bottom of the screen. Over the cable: `RSSI`.
-  *Known problem: not calibrated. An empty channel reads about S9+10.*
+- **Signal meter:** a CB-style S-meter at the bottom of the screen, IARU scale (S9 = -93 dBm above 30 MHz, -73 dBm below; 6 dB per S-unit). Over the cable: `RSSI`.
+  *Tested (test 28, 446 MHz, UV-5R at 1 W): weak signals follow the real level (6 dB per doubling of distance), and with no antenna the floor reads -121 dBm, close to the thermal floor of about -125 dBm. Strong signals, above about -45 dBm, read low (compressed). Indoors with the antenna on, local noise can hold the floor near S9.*
 - **LED colours:** green when receiving, yellow when a signal is held back by the tone squelch, red when transmitting.
   *Tested (tests 12-13).*
 - **Automatic gain control for USB and AM:** turns the receiver gain down on strong signals and back up when they go. On by default. Menu Audio, AGC, or `AGC ON` / `AGC OFF`.
@@ -276,7 +276,7 @@ Check your local rules before transmitting.
 ## Known problems
 
 - **Switching off while transmitting.** If the radio is switched off while transmitting, the radio chip keeps its transmit settings, and the next power-on into bootloader mode transmits until switched off. A normal power-on clears it. **Release PTT before switching off.** The stock firmware has the same gap. Test 16 and later stop transmitting when the supply voltage drops, which should close the gap, but this has not been tested on the radio yet.
-- **Signal meter not calibrated.** The reading follows the receiver gain, so an empty channel shows about S9+10. Calibrating it needs a gain correction and a reference signal.
+- **Signal meter on strong signals.** Above about -45 dBm the reading compresses and reads low (a transmitter right next to the radio).
 
 ## Building from source
 
